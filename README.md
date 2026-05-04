@@ -127,6 +127,9 @@ live2note import-getnote <task_id>
 | `live2note resume TASK_ID` | 从中断点继续执行任务 |
 | `live2note status [TASK_ID]` | 查看任务状态和流程进度 |
 | `live2note list` | 列出所有任务 |
+| `live2note llm-doctor` | 检查 LLM 配置和可用性 |
+| `live2note llm-test` | 发送测试 prompt 给配置的 LLM |
+| `live2note export-prompts TASK_ID` | 导出总结 prompt 文件 |
 | `live2note config-init` | 生成默认配置文件 |
 
 ### run 命令常用选项
@@ -166,9 +169,13 @@ transcription:
   device: "auto"                  # auto | cpu | cuda
 
 llm:
-  api_base: "https://api.openai.com/v1"
-  api_key: ""                     # 或通过环境变量 LLM_API_KEY 设置
+  provider: auto                  # auto | openai_compatible | anthropic | external_cli | prompt_only | none
   model: "gpt-4o"
+  api_base: "https://api.openai.com/v1"
+  api_key: ""                     # 或通过环境变量设置
+  external_cli:
+    enabled: false
+    command: ""                   # e.g. "claude -p" or "codex exec"
 
 getnote:
   enabled: false                  # 是否默认导入 getnote
@@ -183,6 +190,113 @@ output:
 **注意：不要在配置文件中写入真实 API Key。建议使用环境变量 `LLM_API_KEY`。**
 
 完整配置选项见 [`config.example.yaml`](config.example.yaml)。
+
+## 默认 LLM 模式：external_cli
+
+live2note **默认使用 external_cli 模式**，不要求用户单独配置 API Key。
+
+### 默认工作方式
+
+```
+live2note 构建总结 Prompt
+  → 调用本机已登录的外部 Agent CLI
+  → 例如 claude -p
+  → 读取 stdout 作为总结结果
+  → 保存为知识库笔记
+```
+
+### 为什么默认使用 external_cli？
+
+1. 用户通常已经在 Claude Code、Codex、OpenCode、OpenClaw、Hermes 等工具中登录
+2. live2note 不需要直接保存 API Key，更安全
+3. 更适合本地 Agent 工作流
+4. 更适合开源项目
+5. 不读取任何内部 Token，完全透明
+
+### 默认配置
+
+```yaml
+llm:
+  provider: external_cli
+  external_cli:
+    enabled: true
+    command: "claude"
+    args: ["-p"]
+    timeout_seconds: 600
+    fallback_to_prompt_only: true
+```
+
+### 如果 external_cli 不可用
+
+live2note 会自动降级到 **prompt_only 模式**：
+
+1. 正常完成转写和分块
+2. 每个 chunk 的 prompt 写入 `prompts/chunk_NNN_prompt.md`
+3. 提示用户手动复制 prompt 到任意 LLM 处理
+4. **不会导致录音、转写、分块失败**
+
+```powershell
+# 查看导出的 prompt 文件
+ls ~/.live2note/data/tasks/<task_id>/prompts/
+```
+
+### 如果我不用 Claude Code
+
+修改 `external_cli.command` 和 `args` 即可：
+
+**Codex：**
+```yaml
+llm:
+  provider: external_cli
+  external_cli:
+    enabled: true
+    command: "codex"
+    args: ["exec"]
+```
+
+**OpenCode：**
+```yaml
+llm:
+  provider: external_cli
+  external_cli:
+    enabled: true
+    command: "opencode"
+    args: []
+```
+
+**其他工具同理**，只要支持从 stdin 接收 prompt、从 stdout 输出结果。
+
+### 如果我想用 API Key
+
+显式配置 `provider: openai_compatible` 或 `provider: anthropic`：
+
+```yaml
+llm:
+  provider: openai_compatible
+  api_key: "sk-your-key"
+  model: "gpt-4o"
+```
+
+**这不是默认模式，需要用户显式启用。**
+
+### LLM 诊断命令
+
+```powershell
+live2note llm-doctor                      # 检查 LLM 配置
+live2note llm-test                        # 测试默认 external_cli
+live2note llm-test --provider prompt_only # 测试降级模式
+live2note export-prompts <task_id>        # 导出 prompt 文件
+```
+
+### 安全声明
+
+1. live2note 不读取 Claude Code、Codex 等工具的内部 Token
+2. live2note 不扫描用户本地认证文件（`~/.claude/`、`~/.codex/` 等）
+3. live2note 不读取系统密钥链
+4. live2note 不在日志中输出 API Key（自动脱敏）
+5. external_cli 的认证由外部 Agent 自己处理
+6. prompt 内容不在日志中完整打印（仅记录长度）
+7. 不要求普通用户单独配置 API Key
 
 ## 输出目录说明
 
@@ -371,7 +485,7 @@ ruff check src/ tests/
 
 ## 版本说明
 
-当前版本：**v0.1.0**
+当前版本：**v0.1.1**
 
 这是 live2note 的第一个版本，核心能力包括：
 - 直播音频录制与分片

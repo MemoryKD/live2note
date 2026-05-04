@@ -1,5 +1,27 @@
 # 更新日志
 
+## v0.1.1 — 默认 external_cli (2026-05-05)
+
+### 变更
+
+- **默认 LLM Provider 改为 external_cli**：不再要求用户单独配置 API Key
+- 默认通过本机已登录的 Agent CLI 进行知识总结（`claude -p`）
+- external_cli 不可用时自动 fallback 到 prompt_only，不中断流程
+- openai_compatible / anthropic 模式需用户显式启用，不再是默认行为
+- 新增 `llm-doctor` / `llm-test` CLI 诊断命令
+- 新增 `export-prompts` 命令，导出 prompt 文件供手动处理
+- 新增 `--provider` 参数，支持 CLI 级别覆盖 LLM provider
+- ExternalCLIProvider 支持 Windows `.cmd`/`.exe` 后缀自动检测
+- 支持 Claude Code、Codex、OpenCode、OpenClaw、Hermes、cg 等多种 Agent CLI 自动发现
+
+### 安全
+
+- 明确禁止读取任何外部工具的私有配置文件
+- 不扫描 `~/.claude/`、`~/.codex/`、`~/.config/` 等目录
+- 不读取系统密钥链
+- 日志中 Token 自动脱敏（前4后4）
+- prompt 内容不在日志中完整打印（仅记录长度）
+
 ## v0.1.0 - 初始版本 (2026-05-05)
 
 ### 新增

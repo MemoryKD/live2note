@@ -1,4 +1,8 @@
-"""LLM-based chunk summarization using OpenAI-compatible API."""
+"""Chunk summarization using LLM providers.
+
+The Summarizer delegates to a BaseLLMProvider and parses the response.
+It does not care whether the provider is OpenAI, Anthropic, external CLI, or prompt-only.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from live2note.llm.base import BaseLLMProvider, LLMResult
 from live2note.logger import get_logger
 from live2note.processor.chunker import Chunk
 from live2note.prompts import CHUNK_PROMPT_TEMPLATE, SYSTEM_PROMPT
@@ -37,40 +42,66 @@ _EMPTY_SUMMARY: dict[str, Any] = {
     "important_quotes": [],
 }
 
+_PENDING_MARKER = "pending_manual_summary"
+
 
 class Summarizer:
-    """Calls an OpenAI-compatible chat API to extract knowledge from chunks."""
+    """Summarizes chunks using any BaseLLMProvider.
 
-    def __init__(
-        self,
-        api_base: str = "https://api.openai.com/v1",
-        api_key: str = "",
-        model: str = "gpt-4o",
-        temperature: float = 0.3,
-        max_tokens: int = 4096,
-        summary_model: str = "",
-    ) -> None:
-        self._api_base = api_base.rstrip("/")
-        self._api_key = api_key
-        self._model = summary_model or model
-        self._temperature = temperature
-        self._max_tokens = max_tokens
+    The provider is injected — no direct API calls are made here.
+    """
+
+    def __init__(self, provider: BaseLLMProvider) -> None:
+        self._provider = provider
 
     @property
     def is_configured(self) -> bool:
-        return bool(self._api_key)
+        return self._provider.is_available
 
-    def summarize(self, chunk: Chunk) -> ChunkSummary:
-        """Summarize a single chunk. Raises if API key is missing."""
-        if not self._api_key:
-            raise ValueError(
-                "LLM API key not configured. "
-                "Set llm.api_key in config.yaml or LLM_API_KEY env var."
+    @property
+    def provider_name(self) -> str:
+        return self._provider.name
+
+    def summarize(self, chunk: Chunk, task_id: str | None = None) -> ChunkSummary:
+        """Summarize a single chunk using the configured provider."""
+        prompt = CHUNK_PROMPT_TEMPLATE.format(text=chunk.text)
+        full_prompt = f"{SYSTEM_PROMPT}\n\n{prompt}"
+
+        result: LLMResult = self._provider.generate(
+            full_prompt,
+            chunk_id=chunk.chunk_id,
+            suffix="chunk",
+            task_id=task_id,
+        )
+
+        if result.error and not result.text:
+            if result.error == _PENDING_MARKER:
+                return ChunkSummary(
+                    chunk_id=chunk.chunk_id,
+                    start=chunk.start,
+                    end=chunk.end,
+                    summary=_PENDING_MARKER,
+                    key_points=[],
+                    knowledge_points=[],
+                    action_items=[],
+                    tags=[],
+                    keywords=[],
+                    important_quotes=[],
+                )
+            return ChunkSummary(
+                chunk_id=chunk.chunk_id,
+                start=chunk.start,
+                end=chunk.end,
+                summary=f"[Error: {result.error}]",
+                key_points=[],
+                knowledge_points=[],
+                action_items=[],
+                tags=[],
+                keywords=[],
+                important_quotes=[],
             )
 
-        prompt = CHUNK_PROMPT_TEMPLATE.format(text=chunk.text)
-        raw = self._call_api(prompt)
-        data = self._parse_response(raw)
+        data = self._parse_response(result.text)
 
         return ChunkSummary(
             chunk_id=chunk.chunk_id,
@@ -85,41 +116,10 @@ class Summarizer:
             important_quotes=data.get("important_quotes", []),
         )
 
-    # ── internal ─────────────────────────────────────────────
-
-    def _call_api(self, user_prompt: str) -> str:
-        import httpx
-
-        url = f"{self._api_base}/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self._api_key}",
-        }
-        payload = {
-            "model": self._model,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": self._temperature,
-            "max_tokens": self._max_tokens,
-        }
-
-        log.info("Calling LLM: %s (model=%s)", url, self._model)
-
-        with httpx.Client(timeout=120) as client:
-            resp = client.post(url, json=payload, headers=headers)
-            resp.raise_for_status()
-
-        body = resp.json()
-        content = body["choices"][0]["message"]["content"]
-        return content
-
     @staticmethod
     def _parse_response(raw: str) -> dict[str, Any]:
         """Extract JSON from LLM response, handling markdown fences."""
         text = raw.strip()
-        # Strip ```json ... ``` fences if present.
         if text.startswith("```"):
             lines = text.split("\n")
             lines = [

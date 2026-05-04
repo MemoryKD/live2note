@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 from live2note.processor.chunker import Chunk, chunk_segments
 from live2note.processor.cleaner import CleanSegment, clean_segments
 from live2note.processor.summarizer import ChunkSummary, Summarizer
@@ -124,15 +122,28 @@ def test_chunk_empty_input():
 # ── summarizer ──────────────────────────────────────────────
 
 
+class _MockProvider:
+    """A mock LLM provider for testing."""
+    def __init__(self, available=True, response="{}"):
+        self._available = available
+        self._response = response
+        self.name = "mock"
+
+    def generate(self, prompt, **kwargs):
+        from live2note.llm.base import LLMResult
+        return LLMResult(text=self._response)
+
+    @property
+    def is_available(self):
+        return self._available
+
+
 class TestSummarizer:
     def test_is_configured(self):
-        assert Summarizer(api_key="sk-test").is_configured
-        assert not Summarizer(api_key="").is_configured
-
-    def test_raises_without_key(self):
-        s = Summarizer(api_key="")
-        with pytest.raises(ValueError, match="API key not configured"):
-            s.summarize(Chunk(chunk_id=1, start=0, end=1, text="test"))
+        s = Summarizer(provider=_MockProvider(available=True))
+        assert s.is_configured
+        s2 = Summarizer(provider=_MockProvider(available=False))
+        assert not s2.is_configured
 
     def test_parse_json_response(self):
         raw = json.dumps({
@@ -159,9 +170,8 @@ class TestSummarizer:
         assert "This is not JSON" in result["summary"]
         assert result["key_points"] == []
 
-    @patch("live2note.processor.summarizer.Summarizer._call_api")
-    def test_summarize_returns_chunk_summary(self, mock_api):
-        mock_api.return_value = json.dumps({
+    def test_summarize_returns_chunk_summary(self):
+        mock_response = json.dumps({
             "summary": "AI basics explained",
             "key_points": ["ML is a subset of AI"],
             "knowledge_points": ["Neural networks mimic brain"],
@@ -170,7 +180,7 @@ class TestSummarizer:
             "keywords": ["neural", "network"],
             "important_quotes": ["AI is the future"],
         })
-        s = Summarizer(api_key="sk-test")
+        s = Summarizer(provider=_MockProvider(response=mock_response))
         chunk = Chunk(chunk_id=1, start=0.0, end=60.0, text="AI basics...")
         result = s.summarize(chunk)
 
@@ -285,8 +295,10 @@ def test_process_no_api_key_shows_hint(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("LLM_API_KEY", raising=False)
 
     result = runner.invoke(live2note_app(), ["process", task_id])
+    # Without API key, the process command still completes by generating chunks
+    # and final note (prompt_only fallback).
     assert result.exit_code == 0
-    assert "API key" in result.output or "api_key" in result.output.lower()
+    assert "Chunks saved" in result.output
 
 
 def test_process_with_mocked_llm(tmp_path: Path, monkeypatch):
@@ -304,14 +316,17 @@ def test_process_with_mocked_llm(tmp_path: Path, monkeypatch):
         "important_quotes": ["AI is the future"],
     })
 
-    # Set API key so summarizer doesn't skip.
+    from live2note.llm.base import LLMResult
+
+    # Set API key and mock the provider's generate method.
     with (
-        patch("live2note.processor.summarizer.Summarizer._call_api", return_value=mock_summary),
-        patch.dict("os.environ", {"LLM_API_KEY": "sk-test"}),
+        patch.dict("os.environ", {"OPENAI_API_KEY": "sk-test"}),
+        patch("live2note.llm.openai_compatible.OpenAICompatibleProvider.generate",
+              return_value=LLMResult(text=mock_summary)),
     ):
         result = runner.invoke(
             live2note_app(),
-            ["process", task_id],
+            ["process", task_id, "--provider", "openai_compatible"],
         )
 
     assert result.exit_code == 0

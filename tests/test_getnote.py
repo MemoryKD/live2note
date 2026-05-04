@@ -4,10 +4,27 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from live2note.models.task import TaskState
 from live2note.storage.getnote import GetnoteResult, import_to_getnote
+
+
+def _mock_httpx_response(success: bool = True, data: dict | None = None,
+                         error: dict | None = None, status_code: int = 200):
+    """Build a mock httpx.Response."""
+    resp = MagicMock()
+    resp.status_code = status_code
+    body = {"success": success, "data": data or {}, "error": error}
+    resp.json.return_value = body
+    resp.raise_for_status = MagicMock()
+    if status_code >= 400:
+        import httpx
+        resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "error", request=MagicMock(), response=resp
+        )
+    return resp
+
 
 # ── import_to_getnote ───────────────────────────────────────
 
@@ -18,99 +35,189 @@ def test_file_not_found():
     assert "not found" in result.message.lower()
 
 
-def test_success(tmp_path: Path):
-    md = tmp_path / "note.md"
-    md.write_text("# Test", encoding="utf-8")
-
-    mock_run_result = type("R", (), {"returncode": 0, "stdout": "OK saved", "stderr": ""})()
-    with patch("live2note.storage.getnote.subprocess.run", return_value=mock_run_result):
-        result = import_to_getnote(md, command_template='getnote save "{file_path}"')
-
-    assert result.success
-    assert "success" in result.message.lower()
-    assert result.stdout == "OK saved"
-
-
-def test_failure_nonzero_exit(tmp_path: Path):
-    md = tmp_path / "note.md"
-    md.write_text("# Test", encoding="utf-8")
-
-    mock_run_result = type("R", (), {"returncode": 1, "stdout": "", "stderr": "auth error"})()
-    with patch("live2note.storage.getnote.subprocess.run", return_value=mock_run_result):
-        result = import_to_getnote(md)
-
+def test_empty_file_rejected(tmp_path: Path):
+    md = tmp_path / "empty.md"
+    md.write_text("   \n  ", encoding="utf-8")
+    result = import_to_getnote(md)
     assert not result.success
-    assert "code 1" in result.message
-    assert result.stderr == "auth error"
+    assert "empty" in result.message.lower()
 
 
-def test_timeout(tmp_path: Path):
-    import subprocess
-
+def test_read_error_handled(tmp_path: Path):
     md = tmp_path / "note.md"
     md.write_text("# Test", encoding="utf-8")
-
-    with patch(
-        "live2note.storage.getnote.subprocess.run",
-        side_effect=subprocess.TimeoutExpired(cmd="getnote", timeout=5),
-    ):
-        result = import_to_getnote(md, timeout=5)
-
-    assert not result.success
-    assert "timed out" in result.message.lower()
-
-
-def test_command_not_found(tmp_path: Path):
-    md = tmp_path / "note.md"
-    md.write_text("# Test", encoding="utf-8")
-
-    with patch(
-        "live2note.storage.getnote.subprocess.run",
-        side_effect=FileNotFoundError,
-    ):
-        result = import_to_getnote(md)
-
+    result = import_to_getnote(tmp_path)  # directory, not file
     assert not result.success
     assert "not found" in result.message.lower()
 
 
-def test_template_substitution(tmp_path: Path):
+def test_no_api_key(tmp_path: Path):
+    md = tmp_path / "note.md"
+    md.write_text("# Test", encoding="utf-8")
+    with patch("live2note.storage.getnote._load_auth", return_value=("", "")):
+        result = import_to_getnote(md)
+    assert not result.success
+    assert "API key" in result.message
+
+
+def test_success(tmp_path: Path):
+    md = tmp_path / "note.md"
+    content = "# Test Note\n\nMulti-line content here."
+    md.write_text(content, encoding="utf-8")
+
+    with (
+        patch("live2note.storage.getnote._load_auth",
+              return_value=("sk-test", "test-client")),
+        patch("live2note.storage.getnote.httpx.Client") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.post.return_value = _mock_httpx_response(
+            success=True, data={"note_id": "12345"}
+        )
+        mock_client_cls.return_value = mock_client
+
+        result = import_to_getnote(md, title="Test Title", tags=["tag1"])
+
+    assert result.success
+    assert "success" in result.message.lower()
+
+    # Verify the API was called with correct payload.
+    call_args = mock_client.post.call_args
+    assert call_args is not None
+    url = call_args[0][0]
+    assert "/open/api/v1/resource/note/save" in url
+    payload = call_args[1]["json"]
+    assert payload["note_type"] == "plain_text"
+    assert payload["content"] == content
+    assert payload["title"] == "Test Title"
+    assert payload["tags"] == ["tag1"]
+
+
+def test_api_error(tmp_path: Path):
     md = tmp_path / "note.md"
     md.write_text("# Test", encoding="utf-8")
 
-    captured_cmd = {}
-
-    def fake_run(cmd, **kwargs):
-        captured_cmd["cmd"] = cmd
-        return type("R", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
-
-    with patch("live2note.storage.getnote.subprocess.run", side_effect=fake_run):
-        import_to_getnote(
-            md,
-            command_template='getnote save "{file_path}" --title "{title}"',
-            title="My Title",
-            tags=["tag1", "tag2"],
+    with (
+        patch("live2note.storage.getnote._load_auth",
+              return_value=("sk-test", "test-client")),
+        patch("live2note.storage.getnote.httpx.Client") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.post.return_value = _mock_httpx_response(
+            success=False, error={"message": "Rate limited"}, status_code=200
         )
+        mock_client_cls.return_value = mock_client
 
-    assert str(md) in captured_cmd["cmd"]
-    assert "My Title" in captured_cmd["cmd"]
-    assert "--tag" in captured_cmd["cmd"]
+        result = import_to_getnote(md)
+
+    assert not result.success
+    assert "Rate limited" in result.message
+
+
+def test_http_error(tmp_path: Path):
+    md = tmp_path / "note.md"
+    md.write_text("# Test", encoding="utf-8")
+
+    with (
+        patch("live2note.storage.getnote._load_auth",
+              return_value=("sk-test", "test-client")),
+        patch("live2note.storage.getnote.httpx.Client") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.post.return_value = _mock_httpx_response(
+            success=False, status_code=500
+        )
+        mock_client_cls.return_value = mock_client
+
+        result = import_to_getnote(md)
+
+    assert not result.success
+    assert "api request" in result.message.lower()
+
+
+def test_task_polling(tmp_path: Path):
+    md = tmp_path / "note.md"
+    md.write_text("# Test", encoding="utf-8")
+
+    with (
+        patch("live2note.storage.getnote._load_auth",
+              return_value=("sk-test", "test-client")),
+        patch("live2note.storage.getnote.httpx.Client") as mock_client_cls,
+        patch("live2note.storage.getnote._POLL_INTERVAL", 0),  # speed up
+    ):
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+
+        # First call: save returns task_id.
+        save_resp = _mock_httpx_response(
+            success=True, data={"task_id": "task-123"}
+        )
+        # Second call: poll returns done.
+        poll_resp = _mock_httpx_response(
+            success=True, data={"task_id": "task-123", "status": "done", "note_id": "note-456"}
+        )
+        mock_client.post.side_effect = [save_resp, poll_resp]
+        mock_client_cls.return_value = mock_client
+
+        result = import_to_getnote(md)
+
+    assert result.success
+    assert mock_client.post.call_count == 2
 
 
 def test_default_title_from_filename(tmp_path: Path):
     md = tmp_path / "my_note.md"
     md.write_text("# Test", encoding="utf-8")
 
-    captured_cmd = {}
+    with (
+        patch("live2note.storage.getnote._load_auth",
+              return_value=("sk-test", "test-client")),
+        patch("live2note.storage.getnote.httpx.Client") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.post.return_value = _mock_httpx_response(
+            success=True, data={}
+        )
+        mock_client_cls.return_value = mock_client
 
-    def fake_run(cmd, **kwargs):
-        captured_cmd["cmd"] = cmd
-        return type("R", (), {"returncode": 0, "stdout": "ok", "stderr": ""})()
+        result = import_to_getnote(md)
 
-    with patch("live2note.storage.getnote.subprocess.run", side_effect=fake_run):
-        import_to_getnote(md, command_template='getnote save "{file_path}" --title "{title}"')
+    assert result.success
+    payload = mock_client.post.call_args[1]["json"]
+    assert payload["title"] == "my_note"
 
-    assert "my_note" in captured_cmd["cmd"]
+
+def test_old_template_ignored(tmp_path: Path):
+    """Old {file_path} templates are ignored — API is always used."""
+    md = tmp_path / "note.md"
+    content = "# Real content"
+    md.write_text(content, encoding="utf-8")
+
+    with (
+        patch("live2note.storage.getnote._load_auth",
+              return_value=("sk-test", "test-client")),
+        patch("live2note.storage.getnote.httpx.Client") as mock_client_cls,
+    ):
+        mock_client = MagicMock()
+        mock_client.__enter__.return_value = mock_client
+        mock_client.post.return_value = _mock_httpx_response(
+            success=True, data={}
+        )
+        mock_client_cls.return_value = mock_client
+
+        result = import_to_getnote(
+            md,
+            command_template='getnote save "{file_path}" --title "{title}"',
+            title="Test",
+        )
+
+    assert result.success
+    payload = mock_client.post.call_args[1]["json"]
+    assert payload["content"] == content
 
 
 # ── TaskState getnote fields ────────────────────────────────
@@ -162,7 +269,6 @@ def _patch_base_dir(monkeypatch, tmp_path: Path) -> None:
 
 def test_import_getnote_no_note(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
-
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)
@@ -177,7 +283,6 @@ def test_import_getnote_no_note(tmp_path: Path, monkeypatch):
 
 def test_import_getnote_success(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
-
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)
@@ -186,12 +291,10 @@ def test_import_getnote_success(tmp_path: Path, monkeypatch):
     task_id = next((tmp_path / "tasks").iterdir()).name
     task_dir = tmp_path / "tasks" / task_id
 
-    # Create final_note.md.
     notes_dir = task_dir / "notes"
     notes_dir.mkdir(parents=True, exist_ok=True)
     (notes_dir / "final_note.md").write_text("# Test Note", encoding="utf-8")
 
-    # Update task state with final_note_path.
     state_file = task_dir / "task_state.json"
     data = json.loads(state_file.read_text(encoding="utf-8"))
     data["final_note_path"] = str(notes_dir / "final_note.md")
@@ -204,7 +307,6 @@ def test_import_getnote_success(tmp_path: Path, monkeypatch):
     assert result.exit_code == 0
     assert "succeeded" in result.output.lower()
 
-    # Verify task state updated.
     data = json.loads(state_file.read_text(encoding="utf-8"))
     assert data["getnote_imported"] is True
     assert data["getnote_import_time"] is not None
@@ -213,7 +315,6 @@ def test_import_getnote_success(tmp_path: Path, monkeypatch):
 
 def test_import_getnote_failure_does_not_break(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
-
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)
@@ -235,19 +336,17 @@ def test_import_getnote_failure_does_not_break(tmp_path: Path, monkeypatch):
     with patch("live2note.storage.getnote.import_to_getnote", return_value=mock_result):
         result = runner.invoke(app, ["import-getnote", task_id])
 
-    assert result.exit_code == 0  # does NOT fail the CLI
+    assert result.exit_code == 0
     assert "failed" in result.output.lower()
 
     data = json.loads(state_file.read_text(encoding="utf-8"))
     assert data["getnote_imported"] is False
     assert data["getnote_error"] == "auth failed"
-    # File still exists.
     assert (notes_dir / "final_note.md").is_file()
 
 
 def test_import_getnote_already_imported(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
-
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)
@@ -277,7 +376,6 @@ def test_import_getnote_already_imported(tmp_path: Path, monkeypatch):
 
 def test_import_getnote_force_reimport(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
-
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)
@@ -306,7 +404,6 @@ def test_import_getnote_force_reimport(tmp_path: Path, monkeypatch):
 
 def test_import_getnote_not_found(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
-
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)

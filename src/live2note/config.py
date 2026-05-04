@@ -32,16 +32,43 @@ _DEFAULTS: dict[str, Any] = {
         "vad_filter": True,
     },
     "llm": {
+        "provider": "external_cli",
+        "model": "gpt-4o",
         "api_base": "https://api.openai.com/v1",
         "api_key": "",
-        "model": "gpt-4o",
+        "api_key_env": "",
         "temperature": 0.3,
         "max_tokens": 4096,
         "summary_model": "",
+        "auto_detect_env": True,
+        "external_cli": {
+            "enabled": True,
+            "command": "claude",
+            "args": ["-p"],
+            "timeout_seconds": 600,
+            "input_mode": "stdin",
+            "output_mode": "stdout",
+            "fallback_to_prompt_only": True,
+        },
+        "prompt_only": {
+            "enabled": True,
+            "output_dir": "prompts",
+        },
+        "openai_compatible": {
+            "enabled": False,
+            "api_base": "https://api.openai.com/v1",
+            "model": "gpt-4o",
+            "api_key_env": "OPENAI_API_KEY",
+        },
+        "anthropic": {
+            "enabled": False,
+            "model": "claude-sonnet-4-20250514",
+            "api_key_env": "ANTHROPIC_API_KEY",
+        },
     },
     "getnote": {
         "enabled": False,
-        "command": 'getnote save "{file_path}" --title "{title}"',
+        "command": "getnote save",
         "default_tags": ["live2note"],
         "timeout": 60,
     },
@@ -93,18 +120,40 @@ class TranscriptionConfig:
 
 @dataclass(frozen=True)
 class LLMConfig:
+    provider: str = "external_cli"
+    model: str = "gpt-4o"
     api_base: str = "https://api.openai.com/v1"
     api_key: str = ""
-    model: str = "gpt-4o"
+    api_key_env: str = ""
     temperature: float = 0.3
     max_tokens: int = 4096
     summary_model: str = ""
+    auto_detect_env: bool = True
+    external_cli: dict = field(default_factory=lambda: {
+        "enabled": True,
+        "command": "claude",
+        "args": ["-p"],
+        "timeout_seconds": 600,
+        "input_mode": "stdin",
+        "output_mode": "stdout",
+        "fallback_to_prompt_only": True,
+    })
+    prompt_only: dict = field(default_factory=lambda: {
+        "enabled": True,
+        "output_dir": "prompts",
+    })
+    openai_compatible: dict = field(default_factory=lambda: {
+        "enabled": False,
+    })
+    anthropic: dict = field(default_factory=lambda: {
+        "enabled": False,
+    })
 
 
 @dataclass(frozen=True)
 class GetnoteConfig:
     enabled: bool = False
-    command: str = 'getnote save "{file_path}" --title "{title}"'
+    command: str = "getnote save"
     default_tags: tuple[str, ...] = ("live2note",)
     timeout: int = 60
 

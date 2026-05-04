@@ -23,19 +23,59 @@ transcription:
   beam_size: 5
   vad_filter: true             # voice activity detection
 
-# ── LLM (OpenAI-compatible API) ────────────────────────────
+# ── LLM Configuration ─────────────────────────────────────
+# live2note 默认使用 external_cli 模式。
+# 不需要单独配置 API Key，只需本机有一个已登录的 Agent CLI。
+#
+# 默认工作方式：
+#   live2note → 构建 prompt → claude -p (stdin) → stdout → 解析为知识笔记
+#
+# 如果你使用其他 Agent CLI（codex / opencode / openclaw / hermes 等），
+# 修改 external_cli.command 和 args 即可。
+# 如果你想用 API Key 模式，显式设置 provider: openai_compatible 或 anthropic。
+#
+# Set provider to one of: external_cli | openai_compatible | anthropic | prompt_only | none
 llm:
-  api_base: "https://api.openai.com/v1"
-  api_key: ""                  # or set env: export LLM_API_KEY=sk-...
-  model: "gpt-4o"
-  temperature: 0.3
+  provider: external_cli
+  temperature: 0.2
   max_tokens: 4096
-  summary_model: ""            # blank = use model above
+
+  # ── 模式 1（默认）：External CLI ──────────────────────
+  # 将 prompt 通过 stdin 传给外部命令，读取 stdout 作为响应。
+  # 重要：live2note 不会读取任何 Agent 的内部认证文件。
+  #       它只是把 prompt 管道传输给外部命令，就像你在终端中手动输入一样。
+  external_cli:
+    enabled: true
+    command: "claude"             # codex / opencode / openclaw / hermes / cg
+    args: ["-p"]                 # codex 用 ["exec"]，opencode 用 []
+    timeout_seconds: 600
+    input_mode: stdin
+    fallback_to_prompt_only: true
+
+  # ── 模式 2：Prompt Only（降级兜底）───────────────────
+  # external_cli 不可用时自动降级到此模式。
+  # 将 prompt 写入文件，用户可手动复制到任意 LLM 处理。
+  prompt_only:
+    enabled: true
+    output_dir: prompts
+
+  # ── 模式 3：OpenAI 兼容 API（需显式启用）─────────────
+  openai_compatible:
+    enabled: false
+    api_base: "https://api.openai.com/v1"
+    model: "gpt-4o"
+    api_key_env: "OPENAI_API_KEY"
+
+  # ── 模式 4：Anthropic API（需显式启用）───────────────
+  anthropic:
+    enabled: false
+    model: "claude-sonnet-4-20250514"
+    api_key_env: "ANTHROPIC_API_KEY"
 
 # ── getnote integration ────────────────────────────────────
 getnote:
   enabled: false               # set true to auto-import after processing
-  command: 'getnote save "{file_path}" --title "{title}"'
+  command: 'getnote save'  # content passed directly as positional arg
   default_tags:
     - "live2note"
   timeout: 60                  # seconds

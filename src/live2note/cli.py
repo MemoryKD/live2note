@@ -493,6 +493,9 @@ def process(
     ),
     min_chars: int = typer.Option(800, "--min-chars", help="Min characters per chunk"),
     max_chars: int = typer.Option(1500, "--max-chars", help="Max characters per chunk"),
+    provider_override: str = typer.Option(
+        "", "--provider", help="Override LLM provider: auto | openai_compatible | anthropic | external_cli | prompt_only"
+    ),
     config: Path | None = typer.Option(None, "--config", "-c"),
 ) -> None:
     """Clean transcripts, chunk them, and summarize with LLM."""
@@ -573,24 +576,27 @@ def process(
         rprint("[dim]LLM summarization skipped (--skip-llm).[/dim]")
         return
 
+    from live2note.llm import create_provider
     from live2note.processor.summarizer import Summarizer
 
-    summarizer = Summarizer(
-        api_base=cfg.llm.api_base,
-        api_key=cfg.llm.api_key,
-        model=cfg.llm.model,
-        temperature=cfg.llm.temperature,
-        max_tokens=cfg.llm.max_tokens,
-        summary_model=cfg.llm.summary_model,
-    )
+    prompts_dir = task_dir / "prompts"
+    provider = create_provider(cfg.llm, output_dir=prompts_dir, provider_override=provider_override or "")
+    summarizer = Summarizer(provider=provider)
 
     if not summarizer.is_configured:
         rprint(
             "[yellow]LLM API key not configured.[/yellow]\n"
             "[dim]Set llm.api_key in config.yaml or export LLM_API_KEY.\n"
-            "Use --skip-llm to save chunks without summarization.[/dim]"
+            "Use --skip-llm to save chunks without summarization.\n"
+            "Use 'live2note llm doctor' to check your LLM setup.[/dim]"
         )
         return
+
+    if summarizer.provider_name == "prompt_only":
+        rprint(
+            "[yellow]No API key found — using prompt_only mode.[/yellow]\n"
+            f"[dim]Prompts saved to: {prompts_dir}[/dim]"
+        )
 
     summaries_dir = task_dir / "summaries"
     summaries_dir.mkdir(parents=True, exist_ok=True)
@@ -1031,3 +1037,125 @@ def config_init(
     """Generate default configuration file."""
     target = init_config(path)
     rprint(f"[green]Config written to:[/green] {target}")
+
+
+# ── llm doctor ─────────────────────────────────────────────
+
+
+
+@app.command(name="llm-doctor")
+def llm_doctor(
+    config: Path | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Check LLM configuration and availability."""
+    cfg = load_config(config)
+    from live2note.llm import create_provider, detect_env, detect_external_cli, mask_key
+
+    rprint("[bold]LLM Configuration Check[/bold]\n")
+    rprint(f"  Config provider:     {cfg.llm.provider}")
+    rprint(f"  Config model:        {cfg.llm.model}")
+    rprint(f"  Config base URL:     {cfg.llm.api_base}")
+
+    env = detect_env()
+    if env.api_key:
+        rprint(f"  Env API key:         {mask_key(env.api_key)}")
+    else:
+        rprint("  Env API key:         [yellow]not detected[/yellow]")
+    rprint(f"  Detected provider:   {env.provider or 'none'}")
+
+    # External CLI check.
+    ec = cfg.llm.external_cli if hasattr(cfg.llm, "external_cli") else {}
+    ec_enabled = ec.get("enabled") if ec else False
+    ec_command = ec.get("command", "") if ec else ""
+    rprint(f"  External CLI config: {'[green]enabled[/green]' if ec_enabled else '[dim]disabled[/dim]'}")
+    if ec_command:
+        rprint(f"    Command:           {ec_command}")
+
+    auto_cmd = detect_external_cli()
+    if auto_cmd:
+        rprint(f"  Auto-detect CLI:     [green]{auto_cmd}[/green]")
+    else:
+        rprint("  Auto-detect CLI:     [yellow]none found in PATH[/yellow]")
+
+    provider = create_provider(cfg.llm)
+    rprint(f"\n  Active provider:     {provider.name}")
+    rprint(f"  Available:           {'[green]yes[/green]' if provider.is_available else '[red]no[/red]'}")
+
+    rprint("\n[dim]Tip: Set OPENAI_API_KEY, ANTHROPIC_API_KEY, or configure llm.external_cli[/dim]")
+    rprint("[dim]Try: live2note llm-test --provider external_cli --prompt '你好'[/dim]")
+
+
+# ── llm test ────────────────────────────────────────────────
+
+
+@app.command(name="llm-test")
+def llm_test(
+    prompt: str = typer.Option("用一句话介绍你自己。", "--prompt", "-p", help="Test prompt"),
+    provider_override: str = typer.Option(
+        "", "--provider", help="Override LLM provider: auto | openai_compatible | anthropic | external_cli | prompt_only"
+    ),
+    config: Path | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Send a test prompt to the configured LLM."""
+    cfg = load_config(config)
+    from live2note.llm import create_provider
+
+    provider = create_provider(cfg.llm, provider_override=provider_override or "")
+
+    if not provider.is_available:
+        rprint("[red]No LLM provider available.[/red]")
+        rprint("Run 'live2note llm-doctor' for details.")
+        raise typer.Exit(1)
+
+    rprint(f"[dim]Calling provider: {provider.name}[/dim]")
+    rprint(f"[dim]Prompt: {prompt}[/dim]\n")
+
+    result = provider.generate(prompt)
+
+    if result.error and not result.text:
+        rprint(f"[red]Error: {result.error}[/red]")
+        raise typer.Exit(1)
+
+    rprint(f"[green]Response:[/green]\n{result.text[:1000]}")
+
+
+# ── export-prompts ──────────────────────────────────────────
+
+
+@app.command(name="export-prompts")
+def export_prompts(
+    task_id: str = typer.Argument(..., help="Task ID"),
+    config: Path | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Export LLM summary prompts for a task without calling any API."""
+    import json as _json
+
+    cfg = load_config(config)
+    mgr = _get_manager(cfg)
+
+    if not mgr.task_exists(task_id):
+        rprint(f"[red]Task not found: {task_id}[/red]")
+        raise typer.Exit(1)
+
+    task_dir = mgr.base_dir / task_id
+    chunks_path = task_dir / "chunks" / "chunks.json"
+    if not chunks_path.is_file():
+        rprint("[yellow]No chunks found. Run 'process' first.[/yellow]")
+        raise typer.Exit(1)
+
+    chunks = _json.loads(chunks_path.read_text(encoding="utf-8"))
+    prompts_dir = task_dir / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+
+    from live2note.prompts import CHUNK_PROMPT_TEMPLATE, SYSTEM_PROMPT
+
+    for chunk in chunks:
+        cid = chunk["chunk_id"]
+        text = chunk.get("text", "")
+        prompt = f"{SYSTEM_PROMPT}\n\n{CHUNK_PROMPT_TEMPLATE.format(text=text)}"
+        filepath = prompts_dir / f"chunk_{cid:03d}_prompt.md"
+        filepath.write_text(prompt, encoding="utf-8")
+
+    rprint(f"[green]Exported {len(chunks)} prompt(s) to: {prompts_dir}[/green]")
+    rprint("[dim]Copy these prompts to any LLM or agent for processing.[/dim]")
+    rprint("[dim]Then use 'live2note import-summary' to import results.[/dim]")

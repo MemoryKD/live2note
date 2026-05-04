@@ -207,20 +207,28 @@ class Pipeline:
     # ── step: summarize ──────────────────────────────────────
 
     def _step_summarize(self, state: TaskState, task_dir: Path, chunks) -> None:
+        from live2note.llm import create_provider
         from live2note.processor.summarizer import Summarizer
 
-        summarizer = Summarizer(
-            api_base=self._cfg.llm.api_base,
-            api_key=self._cfg.llm.api_key,
-            model=self._cfg.llm.model,
-            temperature=self._cfg.llm.temperature,
-            max_tokens=self._cfg.llm.max_tokens,
-            summary_model=self._cfg.llm.summary_model,
-        )
+        prompts_dir = task_dir / "prompts"
+        provider = create_provider(self._cfg.llm, output_dir=prompts_dir)
+        summarizer = Summarizer(provider=provider)
 
         if not summarizer.is_configured:
-            log.warning("LLM API key not configured — skipping summarization.")
+            log.warning("No LLM provider available — skipping summarization.")
             return
+
+        log.info("Summarizing with provider: %s", provider.name)
+        if provider.name != "prompt_only" and provider.name != "none":
+            log.info("LLM provider details: %s", provider.name)
+
+        # Also check provider availability for non-prompt_only providers.
+        if not provider.is_available:
+            if "prompt_only" in provider.name:
+                pass  # prompt_only is always available
+            else:
+                log.warning("LLM provider %s unavailable — skipping.", provider.name)
+                return
 
         summaries_dir = task_dir / "summaries"
         summaries_dir.mkdir(parents=True, exist_ok=True)

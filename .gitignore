@@ -30,5 +30,8 @@ cookies/
 .env
 .env.*
 
+.claude/
+.worktrees/
+
 .DS_Store
 Thumbs.db
