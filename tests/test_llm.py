@@ -7,9 +7,8 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
-from live2note.llm.base import BaseLLMProvider, LLMResult
+from live2note.llm.base import LLMResult
+from live2note.llm.env_detector import mask_key
 from live2note.llm.external_cli import (
     ExternalCLIProvider,
     _redact_sensitive,
@@ -17,8 +16,6 @@ from live2note.llm.external_cli import (
     detect_external_cli,
 )
 from live2note.llm.provider_registry import create_provider
-from live2note.llm.env_detector import detect_env, mask_key
-
 
 # ── _redact_sensitive ──────────────────────────────────────────
 
@@ -376,6 +373,7 @@ def test_prompt_only_no_output_dir():
 
 def test_cli_llm_doctor(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
+
     from live2note.cli import app
 
     # Patch base dir.
@@ -396,8 +394,8 @@ def test_cli_llm_doctor(tmp_path: Path, monkeypatch):
 def test_cli_llm_test_no_provider(tmp_path: Path, monkeypatch):
     """llm-test should exit 1 when provider is none (no config available)."""
     from typer.testing import CliRunner
+
     from live2note.cli import app
-    import yaml
 
     # Write a config that explicitly sets provider=none.
     config_dir = tmp_path / "config"
@@ -419,9 +417,11 @@ def test_cli_llm_test_no_provider(tmp_path: Path, monkeypatch):
 # ── CLI process --provider ─────────────────────────────────────
 
 def test_cli_process_with_provider_flag(tmp_path: Path, monkeypatch):
-    from typer.testing import CliRunner
-    from live2note.cli import app
     import json as _json
+
+    from typer.testing import CliRunner
+
+    from live2note.cli import app
 
     def factory():
         return tmp_path / "tasks"
@@ -459,9 +459,11 @@ def test_cli_process_with_provider_flag(tmp_path: Path, monkeypatch):
 # ── CLI export-prompts ─────────────────────────────────────────
 
 def test_cli_export_prompts(tmp_path: Path, monkeypatch):
-    from typer.testing import CliRunner
-    from live2note.cli import app
     import json as _json
+
+    from typer.testing import CliRunner
+
+    from live2note.cli import app
 
     def factory():
         return tmp_path / "tasks"

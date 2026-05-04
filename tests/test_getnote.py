@@ -269,6 +269,7 @@ def _patch_base_dir(monkeypatch, tmp_path: Path) -> None:
 
 def test_import_getnote_no_note(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
+
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)
@@ -283,6 +284,7 @@ def test_import_getnote_no_note(tmp_path: Path, monkeypatch):
 
 def test_import_getnote_success(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
+
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)
@@ -315,6 +317,7 @@ def test_import_getnote_success(tmp_path: Path, monkeypatch):
 
 def test_import_getnote_failure_does_not_break(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
+
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)
@@ -347,6 +350,7 @@ def test_import_getnote_failure_does_not_break(tmp_path: Path, monkeypatch):
 
 def test_import_getnote_already_imported(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
+
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)
@@ -376,6 +380,7 @@ def test_import_getnote_already_imported(tmp_path: Path, monkeypatch):
 
 def test_import_getnote_force_reimport(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
+
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)
@@ -404,6 +409,7 @@ def test_import_getnote_force_reimport(tmp_path: Path, monkeypatch):
 
 def test_import_getnote_not_found(tmp_path: Path, monkeypatch):
     from typer.testing import CliRunner
+
     from live2note.cli import app
 
     _patch_base_dir(monkeypatch, tmp_path)
