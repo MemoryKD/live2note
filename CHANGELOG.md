@@ -1,5 +1,12 @@
 # 更新日志
 
+## v0.1.2 — 修复 CI lint (2026-05-05)
+
+### 修复
+
+- 修复 ruff lint 错误（未使用的 import、import 块排序问题）
+- tests 文件 import 块按 stdlib → third-party → first-party 规范排序
+
 ## v0.1.1 — 默认 external_cli (2026-05-05)
 
 ### 变更

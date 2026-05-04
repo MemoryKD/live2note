@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "live2note"
-version = "0.1.1"
+version = "0.1.2"
 description = "Live stream knowledge capture agent — record, transcribe, organize, export."
 readme = "README.md"
 license = "MIT"
