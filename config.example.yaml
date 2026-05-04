@@ -1,0 +1,54 @@
+# live2note configuration
+# Copy to ~/.live2note/config.yaml or ./live2note.yaml and edit as needed.
+# Generate with: live2note config-init
+
+# ── Recording ──────────────────────────────────────────────
+recording:
+  segment_duration: 5          # minutes per audio segment
+  audio_format: "wav"
+  audio_sample_rate: 16000     # whisper optimal sample rate
+  audio_channels: 1            # mono
+  ffmpeg_path: "ffmpeg"        # path to ffmpeg binary
+  stop_grace_seconds: 10       # seconds to wait for graceful ffmpeg stop
+  no_data_timeout_seconds: 180 # stop if no new segment within this time
+  live_check_interval_seconds: 60  # how often to check if stream is still live
+  max_live_check_failures: 3   # consecutive failures before auto-stop
+
+# ── Transcription ──────────────────────────────────────────
+transcription:
+  model_size: "large-v3"       # tiny | base | small | medium | large-v3
+  language: "zh"               # language code (zh, en, ja, ...)
+  device: "auto"               # auto | cpu | cuda
+  compute_type: "auto"         # auto | int8 | float16 | float32
+  beam_size: 5
+  vad_filter: true             # voice activity detection
+
+# ── LLM (OpenAI-compatible API) ────────────────────────────
+llm:
+  api_base: "https://api.openai.com/v1"
+  api_key: ""                  # or set env: export LLM_API_KEY=sk-...
+  model: "gpt-4o"
+  temperature: 0.3
+  max_tokens: 4096
+  summary_model: ""            # blank = use model above
+
+# ── getnote integration ────────────────────────────────────
+getnote:
+  enabled: false               # set true to auto-import after processing
+  command: 'getnote save "{file_path}" --title "{title}"'
+  default_tags:
+    - "live2note"
+  timeout: 60                  # seconds
+
+# ── Output ─────────────────────────────────────────────────
+output:
+  base_dir: ""                 # blank = ~/.live2note/data/tasks
+  keep_audio: true
+  keep_intermediate: true
+
+# ── Platform overrides ─────────────────────────────────────
+platforms:
+  bilibili:
+    quality: "best"
+  douyin:
+    quality: "best"

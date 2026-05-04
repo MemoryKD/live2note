@@ -1,0 +1,389 @@
+# live2note
+
+> 将 B站、抖音等直播平台的直播内容录制、转写、整理为知识库笔记，并导入 getnote 的开源 CLI 工具。
+
+[![CI](https://github.com/MemoryKD/live2note/actions/workflows/ci.yml/badge.svg)](https://github.com/MemoryKD/live2note/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+
+## 项目简介
+
+live2note 是一个命令行工具，用于将 B站、抖音等直播平台上分享干货的主播直播内容，自动录制音频、本地转写为文字、调用 LLM 整理为结构化知识库，并导入 getnote 方便后续搜索。
+
+你可以把它理解为「直播知识采集 Agent」——输入一个直播间地址，它自动完成从录音到知识笔记的全流程。
+
+## 核心功能
+
+- 输入直播间地址，自动识别平台（B站、抖音、通用流）
+- 使用 ffmpeg 录制直播音频，按时间分片保存
+- 使用 faster-whisper 在本地转写音频为文字
+- 调用 LLM（OpenAI 兼容 API）自动提取摘要、核心观点、可执行建议和关键词
+- 生成结构化的 Markdown 和 JSON 知识库文件
+- 支持导入 getnote，方便后续语义搜索
+- 完整的任务状态管理，支持断点续跑
+- 支持手动停止（`live2note stop`）和直播结束自动停止
+
+## 使用场景
+
+- 个人学习：录制知识类直播，整理为可搜索的笔记
+- 内容复盘：回顾直播中的关键观点和知识要点
+- 知识管理：将直播内容转化为结构化知识库
+
+**本工具仅用于个人学习和知识整理，不用于未授权传播。**
+
+## 安装前准备
+
+### 系统要求
+
+- Python 3.10 及以上
+- [ffmpeg](https://ffmpeg.org/download.html)（音频录制）
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp)（直播流地址解析）
+- [getnote](https://github.com/nicepkg/getnote)（可选，知识库导入）
+
+### 安装 ffmpeg
+
+```bash
+# macOS
+brew install ffmpeg
+
+# Ubuntu / Debian
+sudo apt install ffmpeg
+
+# Windows (winget)
+winget install FFmpeg
+
+# 或者从官网下载：https://ffmpeg.org/download.html
+```
+
+### 安装 yt-dlp
+
+```bash
+pip install yt-dlp
+```
+
+### 安装 getnote（可选）
+
+参考 [getnote 安装文档](https://github.com/nicepkg/getnote)。
+
+## 安装方法
+
+```bash
+# 从 GitHub 克隆
+git clone https://github.com/MemoryKD/live2note.git
+cd live2note
+
+# 安装（开发模式）
+pip install -e ".[dev]"
+
+# 生成默认配置
+live2note config-init
+
+# 验证安装
+live2note --help
+```
+
+## 快速开始
+
+```bash
+# 生成配置文件
+live2note config-init
+
+# 录制 B站直播间（30 分钟，并导入 getnote）
+live2note run "https://live.bilibili.com/xxxx" --duration 30 --getnote
+
+# 录制抖音直播间
+live2note run "https://live.douyin.com/xxxx" --getnote
+
+# 录制通用直播流
+live2note run "https://example.com/live.m3u8" --platform generic --getnote
+
+# 查看任务状态
+live2note status
+
+# 列出所有任务
+live2note list
+
+# 手动停止录制
+live2note stop <task_id>
+
+# 断点续跑
+live2note resume <task_id>
+
+# 单独导入 getnote
+live2note import-getnote <task_id>
+```
+
+## 命令行参考
+
+| 命令 | 说明 |
+|------|------|
+| `live2note run URL` | 录制直播、转写、整理、导出（全流程） |
+| `live2note watch URL` | 等待直播开始，开播后自动录制 |
+| `live2note transcribe TASK_ID` | 转写任务的音频片段 |
+| `live2note process TASK_ID` | 清洗、分块、LLM 总结转写内容 |
+| `live2note save TASK_ID` | 生成 final_note.md 和 final_note.json |
+| `live2note import-getnote TASK_ID` | 将最终笔记导入 getnote |
+| `live2note stop TASK_ID` | 停止正在进行的录制任务 |
+| `live2note resume TASK_ID` | 从中断点继续执行任务 |
+| `live2note status [TASK_ID]` | 查看任务状态和流程进度 |
+| `live2note list` | 列出所有任务 |
+| `live2note config-init` | 生成默认配置文件 |
+
+### run 命令常用选项
+
+```
+live2note run URL [OPTIONS]
+
+  --platform TEXT       平台：auto | bilibili | douyin | generic（默认 auto）
+  -d, --duration INT    录制时长（分钟），0 为手动停止（默认 0）
+  -s, --segment INT     每段音频时长（分钟，默认 5）
+  --stream-url TEXT     直接指定直播流地址
+  -g, --getnote         处理完成后导入 getnote
+  --getnote-tag TEXT    getnote 标签（可重复）
+  --no-check            跳过直播状态检测
+  --no-record           跳过录制（仅创建任务）
+  -c, --config PATH     指定配置文件路径
+```
+
+## 配置文件说明
+
+运行 `live2note config-init` 生成 `~/.live2note/config.yaml`。
+
+关键配置项：
+
+```yaml
+recording:
+  segment_duration: 5             # 每段音频时长（分钟）
+  ffmpeg_path: "ffmpeg"           # ffmpeg 可执行文件路径
+  stop_grace_seconds: 10          # 停止录制时的优雅等待时间
+  no_data_timeout_seconds: 180    # 无数据超时自动停止
+  live_check_interval_seconds: 60 # 直播状态检测间隔
+  max_live_check_failures: 3      # 连续检测失败上限
+
+transcription:
+  model_size: "large-v3"          # whisper 模型大小
+  language: "zh"                  # 语言代码
+  device: "auto"                  # auto | cpu | cuda
+
+llm:
+  api_base: "https://api.openai.com/v1"
+  api_key: ""                     # 或通过环境变量 LLM_API_KEY 设置
+  model: "gpt-4o"
+
+getnote:
+  enabled: false                  # 是否默认导入 getnote
+  command: 'getnote save "{file_path}" --title "{title}"'
+
+output:
+  base_dir: ""                    # 数据保存目录（空 = ~/.live2note/data/tasks）
+  keep_audio: true                # 是否保留音频文件
+  keep_intermediate: true         # 是否保留中间文件
+```
+
+**注意：不要在配置文件中写入真实 API Key。建议使用环境变量 `LLM_API_KEY`。**
+
+完整配置选项见 [`config.example.yaml`](config.example.yaml)。
+
+## 输出目录说明
+
+```
+~/.live2note/data/tasks/<task_id>/
+  task_state.json          # 任务状态与流程检查点
+  metadata.json            # 直播元信息（标题、主播等）
+  control/
+    stop.flag              # 停止信号文件
+  audio_segments/
+    segment_001.wav        # 16 kHz 单声道 WAV
+    segment_002.wav
+  transcripts/
+    segment_001.json       # 带时间戳的转写结果
+    segment_001.md         # 人类可读的转写文本
+  chunks/
+    chunks.json            # 清洗分块后的文本
+  summaries/
+    chunk_summaries.json   # LLM 逐块总结
+  notes/
+    final_note.md          # 结构化知识笔记
+    final_note.json        # JSON 格式（用于向量数据库 / RAG）
+  logs/
+    task.log               # 任务日志
+```
+
+## 支持平台
+
+| 平台 | URL 格式 | 解析方式 |
+|------|---------|---------|
+| B站 (Bilibili) | `live.bilibili.com/<房间号>` | yt-dlp |
+| 抖音 (Douyin) | `live.douyin.com/<房间号>` | yt-dlp |
+| 通用流 | `.m3u8` / `.flv` / `rtmp://` | ffmpeg 直连 |
+
+## getnote 导入说明
+
+- 当 `--getnote` 标志或配置中 `getnote.enabled: true` 时，`final_note.md` 将被导入 getnote
+- getnote 命令模板可在配置文件中自定义
+- 如果 getnote 导入失败，不影响本地文件保存
+- 可通过 `live2note import-getnote <task_id>` 单独导入
+
+## 停止录制说明
+
+live2note 支持两种停止方式：
+
+**方式一：直播结束自动停止**
+
+当 LiveMonitor 检测到直播结束，或连续无数据超时，会：
+1. 自动停止 ffmpeg 录制
+2. 保存已录制的音频片段
+3. 继续完成转写、总结、生成笔记
+4. 任务状态标记为 `COMPLETED`
+
+**方式二：手动停止**
+
+```bash
+live2note stop <task_id>        # 优雅停止
+live2note stop <task_id> --force # 强制停止
+```
+
+停止后：
+1. 已录制的音频片段不会丢失
+2. 可以继续处理已录制内容
+3. 生成部分 final_note（标注为手动停止）
+4. 任务状态标记为 `COMPLETED_WITH_MANUAL_STOP`
+
+## 注意事项与合规声明
+
+**本工具仅用于个人学习和知识整理。**
+
+- 用户需要确保自己有权限观看和处理相关直播内容
+- 本工具不支持绕过 DRM、付费墙、登录限制或平台访问控制
+- 不鼓励也不支持未经授权的内容传播
+- 用户需要自行遵守平台规则和当地法律法规
+- 录制内容默认仅供个人学习和知识整理使用
+
+## 常见问题
+
+### ffmpeg 找不到怎么办？
+
+请确保已安装 ffmpeg 并加入 PATH。安装方法见[安装前准备](#安装前准备)。
+
+```bash
+# 验证安装
+ffmpeg -version
+```
+
+### yt-dlp 解析失败怎么办？
+
+部分平台可能需要浏览器环境。可以尝试：
+1. 在浏览器中打开直播间
+2. 使用开发者工具（F12 → 网络）找到 `.m3u8` 或 `.flv` 地址
+3. 使用通用流模式：`live2note run <流地址> --platform generic`
+
+### 抖音直播解析失败怎么办？
+
+抖音的反爬机制可能导致 yt-dlp 无法直接获取流地址。建议：
+1. 在浏览器中打开直播间
+2. 使用开发者工具获取 `.flv` 流地址
+3. 使用 `live2note run <流地址> --platform generic`
+
+### faster-whisper 转写太慢怎么办？
+
+- 使用更小的模型：`--model tiny` 或 `--model small`
+- 如果有 NVIDIA GPU，安装 CUDA 并在配置中设置 `device: "cuda"`
+- 使用 CPU 时可以选择 `medium` 模型在速度和精度之间取得平衡
+
+### getnote 导入失败怎么办？
+
+- 检查 getnote 是否已安装：`getnote --help`
+- 检查 getnote 登录状态：`getnote auth`
+- 导入失败不会影响本地文件，可以稍后使用 `live2note import-getnote <task_id>` 重试
+
+### 如何手动停止录制？
+
+在另一个终端执行：
+
+```bash
+live2note stop <task_id>
+```
+
+已录制的音频和已完成的处理不会丢失。
+
+### 如何断点续跑？
+
+任务中断后（Ctrl+C、手动停止、错误），使用：
+
+```bash
+live2note resume <task_id>
+```
+
+工具会自动跳过已完成的步骤，从中断处继续。
+
+### 数据保存在哪里？
+
+默认保存路径：`~/.live2note/data/tasks/<task_id>/`
+
+可在配置文件中通过 `output.base_dir` 修改。
+
+## 开发说明
+
+### 项目结构
+
+```
+src/live2note/
+  cli.py              # Typer CLI 入口（所有命令）
+  pipeline.py          # 流水线执行器
+  config.py            # YAML 配置加载
+  task_manager.py      # 任务管理
+  models/task.py       # 任务状态数据模型
+  adapters/            # 平台适配器（bilibili / douyin / generic）
+  recorder/            # ffmpeg 录制 + 停止控制 + 直播监控
+  transcriber/         # faster-whisper 转写
+  processor/           # 清洗 / 分块 / LLM 总结 / 笔记生成
+  storage/             # Markdown / JSON 写入 + getnote 导入
+```
+
+### 安装开发依赖
+
+```bash
+pip install -e ".[dev]"
+```
+
+### 运行测试
+
+```bash
+# 运行所有测试
+pytest
+
+# 带覆盖率
+pytest --cov=live2note --cov-report=term-missing
+
+# 单个测试文件
+pytest tests/test_cli.py -v
+```
+
+### 代码质量检查
+
+```bash
+ruff check src/ tests/
+```
+
+### 提交贡献
+
+见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+
+## 版本说明
+
+当前版本：**v0.1.0**
+
+这是 live2note 的第一个版本，核心能力包括：
+- 直播音频录制与分片
+- 本地语音转写（faster-whisper）
+- LLM 知识整理与总结
+- Markdown / JSON 知识库输出
+- getnote 导入
+- 任务状态管理与断点续跑
+- 手动停止与自动停止
+
+更多版本信息见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 许可证
+
+[MIT](LICENSE)
