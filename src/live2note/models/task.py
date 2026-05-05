@@ -168,6 +168,7 @@ class TaskState:
     getnote_import_time: str | None = None
     getnote_error: str | None = None
     getnote_tags: list[str] = field(default_factory=list)
+    speakers: dict[str, str] = field(default_factory=dict)
     error_message: str | None = None
     retry_count: int = 0
     duration: int = 0
@@ -308,6 +309,7 @@ class TaskState:
             "getnote_import_time": self.getnote_import_time,
             "getnote_error": self.getnote_error,
             "getnote_tags": list(self.getnote_tags),
+            "speakers": dict(self.speakers),
             "error_message": self.error_message,
             "retry_count": self.retry_count,
             "duration": self.duration,
@@ -347,6 +349,7 @@ class TaskState:
             getnote_import_time=data.get("getnote_import_time"),
             getnote_error=data.get("getnote_error"),
             getnote_tags=data.get("getnote_tags", []),
+            speakers=data.get("speakers", {}),
             error_message=data.get("error_message"),
             retry_count=data.get("retry_count", 0),
             duration=data.get("duration", 0),

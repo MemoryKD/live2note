@@ -32,7 +32,7 @@ def test_help():
 def test_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "0.1.2" in result.output
+    assert "0.1.3" in result.output
 
 
 def test_config_init(tmp_path: Path):

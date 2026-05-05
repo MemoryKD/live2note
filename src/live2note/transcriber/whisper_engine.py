@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,7 @@ class Segment:
     end: float
     text: str
     confidence: float
+    speaker: str = ""
 
 
 class WhisperEngine:
@@ -35,6 +36,9 @@ class WhisperEngine:
         compute_type: str = "auto",
         beam_size: int = 5,
         vad_filter: bool = True,
+        initial_prompt: str = "",
+        hotwords: str = "",
+        word_timestamps: bool = False,
     ) -> None:
         self._model_size = model_size
         self._language = language
@@ -42,6 +46,9 @@ class WhisperEngine:
         self._compute_type = compute_type
         self._beam_size = beam_size
         self._vad_filter = vad_filter
+        self._initial_prompt = initial_prompt
+        self._hotwords = hotwords
+        self._word_timestamps = word_timestamps
         self._model: Any = None
 
     def _ensure_model(self) -> Any:
@@ -87,14 +94,20 @@ class WhisperEngine:
         model = self._ensure_model()
 
         log.info("Transcribing: %s", audio_path.name)
-        segments_gen, info = model.transcribe(
-            str(audio_path),
+        transcribe_kwargs: dict[str, Any] = dict(
             language=self._language,
             beam_size=self._beam_size,
             vad_filter=self._vad_filter,
-            vad_parameters=dict(
-                min_silence_duration_ms=500,
-            ),
+            vad_parameters=dict(min_silence_duration_ms=500),
+            word_timestamps=self._word_timestamps,
+        )
+        if self._initial_prompt:
+            transcribe_kwargs["initial_prompt"] = self._initial_prompt
+        if self._hotwords:
+            transcribe_kwargs["hotwords"] = self._hotwords
+        segments_gen, info = model.transcribe(
+            str(audio_path),
+            **transcribe_kwargs,
         )
 
         log.info(

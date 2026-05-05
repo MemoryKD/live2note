@@ -95,8 +95,8 @@ def test_write_markdown_basic(tmp_path: Path):
     content = out.read_text(encoding="utf-8")
     assert "Segment 001" in content
     assert "segment_001.wav" in content
-    assert "**[00:00]** hello" in content
-    assert "**[00:03]** world" in content
+    assert "[00:00] hello" in content
+    assert "[00:03] world" in content
 
 
 def test_write_markdown_with_offset(tmp_path: Path):
@@ -107,7 +107,7 @@ def test_write_markdown_with_offset(tmp_path: Path):
     write_transcript_markdown(out, 2, "segment_002.wav", segments, global_offset=300.0)
 
     content = out.read_text(encoding="utf-8")
-    assert "**[05:00]** second" in content
+    assert "[05:00] second" in content
     assert "05:00" in content  # segment start timestamp
 
 
@@ -191,6 +191,7 @@ class TestWhisperEngine:
             beam_size=3,
             vad_filter=False,
             vad_parameters=dict(min_silence_duration_ms=500),
+            word_timestamps=False,
         )
 
     def test_is_loaded(self):

@@ -91,6 +91,10 @@ class Pipeline:
         state.set_step("transcribe")
         self._mgr.save(state)
 
+        # Build hotwords from glossary.
+        glossary = self._cfg.transcription.glossary
+        hotwords = " ".join(glossary) if glossary else ""
+
         engine = WhisperEngine(
             model_size=self._cfg.transcription.model_size,
             language=self._cfg.transcription.language,
@@ -98,12 +102,18 @@ class Pipeline:
             compute_type=self._cfg.transcription.compute_type,
             beam_size=self._cfg.transcription.beam_size,
             vad_filter=self._cfg.transcription.vad_filter,
+            initial_prompt=self._cfg.transcription.initial_prompt,
+            hotwords=hotwords,
+            word_timestamps=self._cfg.transcription.word_timestamps,
         )
 
         transcripts_dir = task_dir / "transcripts"
         global_offset = 0.0
         completed = 0
         failed = 0
+
+        # Collect per-segment results for optional diarization pass.
+        segment_results: list[tuple[int, str, float, list]] = []
 
         for seg_info in state.audio_segments:
             idx = seg_info["index"]
@@ -132,6 +142,8 @@ class Pipeline:
                 global_offset += seg_duration
                 continue
 
+            segment_results.append((idx, str(audio_path), seg_duration, segments))
+
             stem = f"segment_{idx:03d}"
             json_path = transcripts_dir / f"{stem}.json"
             md_path = transcripts_dir / f"{stem}.md"
@@ -147,10 +159,99 @@ class Pipeline:
         if failed > 0 and completed == 0:
             raise RuntimeError(f"All {failed} segment(s) failed to transcribe.")
 
+        # ── Optional diarization pass ─────────────────────────
+        if self._cfg.diarization.enabled and segment_results:
+            log.info("Diarization enabled — running speaker diarization.")
+            try:
+                self._run_diarization(state, task_dir, transcripts_dir, segment_results)
+            except Exception as exc:
+                log.warning("Diarization failed (non-fatal): %s", exc)
+
         state.finish_step("transcribe")
         self._mgr.save(state)
         log.info("Transcription: %d done, %d failed.", completed, failed)
         return state
+
+    def _run_diarization(
+        self,
+        state: TaskState,
+        task_dir: Path,
+        transcripts_dir: Path,
+        segment_results: list[tuple[int, str, float, list]],
+    ) -> None:
+        """Run speaker diarization on all audio segments and re-write transcripts."""
+        import os
+
+        from live2note.transcriber.diarization.assigner import assign_speakers
+        from live2note.transcriber.diarization.pyannote_backend import PyannoteDiarizer
+        from live2note.transcriber.transcript_writer import (
+            write_transcript_json,
+            write_transcript_markdown,
+        )
+        from live2note.transcriber.whisper_engine import Segment
+
+        dia_cfg = self._cfg.diarization
+        auth_token = os.environ.get(dia_cfg.auth_token_env, "")
+
+        diarizer = PyannoteDiarizer(
+            model=dia_cfg.model,
+            device=dia_cfg.device,
+            auth_token=auth_token,
+            num_speakers=dia_cfg.num_speakers,
+        )
+
+        if not diarizer.is_available:
+            log.warning("Diarization not available: %s", diarizer.load_error)
+            return
+
+        # Collect speaker label to display name mapping.
+        display_names = dict(state.speakers) if state.speakers else {}
+
+        for idx, audio_path_str, seg_duration, segments in segment_results:
+            audio_path = Path(audio_path_str)
+            try:
+                diar_segments = diarizer.diarize(audio_path)
+            except Exception as exc:
+                log.error("Diarization failed for %s: %s", audio_path.name, exc)
+                continue
+
+            if not diar_segments:
+                log.info("No diarization segments for %s, skipping.", audio_path.name)
+                continue
+
+            # Assign speakers to whisper segments.
+            assigned = assign_speakers(segments, diar_segments)
+
+            # Apply any custom display name mapping.
+            if display_names:
+                assigned = [
+                    Segment(
+                        start=s.start,
+                        end=s.end,
+                        text=s.text,
+                        confidence=s.confidence,
+                        speaker=display_names.get(s.speaker, s.speaker),
+                    )
+                    for s in assigned
+                ]
+
+            # Re-write transcript files with speaker info.
+            stem = f"segment_{idx:03d}"
+            json_path = transcripts_dir / f"{stem}.json"
+            md_path = transcripts_dir / f"{stem}.md"
+
+            # Recalculate global_offset from previous segments.
+            goff = sum(
+                float(si["duration"])
+                for si in state.audio_segments
+                if int(si["index"]) < idx
+            )
+
+            write_transcript_json(json_path, idx, audio_path.name, assigned, goff)
+            write_transcript_markdown(md_path, idx, audio_path.name, assigned, goff)
+            log.info("Re-wrote %s with speaker labels.", stem)
+
+        log.info("Diarization complete for %d segment(s).", len(segment_results))
 
     # ── step: process (clean + chunk + summarize) ─────────────
 
@@ -291,6 +392,7 @@ class Pipeline:
             metadata=state.metadata.to_dict(),
             chunks=chunks,
             summaries=summaries,
+            task_dir=task_dir,
         )
 
         notes_dir = task_dir / "notes"

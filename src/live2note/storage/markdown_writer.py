@@ -39,6 +39,15 @@ def write_final_markdown(note: FinalNote, output_path: Path) -> None:
     lines.append(f"- 标签：{', '.join(note.tags)}")
     lines.append("")
 
+    # Speaker info.
+    if note.speaker_info:
+        lines.append("## 说话人")
+        lines.append("")
+        for spk in note.speaker_info:
+            count = spk.get("segment_count", 0)
+            lines.append(f"- **{spk['speaker']}**: 发言 {count} 次")
+        lines.append("")
+
     # One-line summary.
     lines.append("## 一句话总结")
     lines.append("")

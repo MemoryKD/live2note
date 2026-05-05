@@ -30,6 +30,9 @@ _DEFAULTS: dict[str, Any] = {
         "compute_type": "auto",
         "beam_size": 5,
         "vad_filter": True,
+        "initial_prompt": "",
+        "glossary": [],
+        "word_timestamps": False,
     },
     "llm": {
         "provider": "external_cli",
@@ -77,6 +80,13 @@ _DEFAULTS: dict[str, Any] = {
         "keep_audio": True,
         "keep_intermediate": True,
     },
+    "diarization": {
+        "enabled": False,
+        "model": "pyannote/speaker-diarization-3.1",
+        "auth_token_env": "HUGGING_FACE_HUB_TOKEN",
+        "num_speakers": 0,
+        "device": "auto",
+    },
     "platforms": {
         "bilibili": {"quality": "best"},
         "douyin": {"quality": "best"},
@@ -116,6 +126,9 @@ class TranscriptionConfig:
     compute_type: str = "auto"
     beam_size: int = 5
     vad_filter: bool = True
+    initial_prompt: str = ""
+    glossary: tuple[str, ...] = ()
+    word_timestamps: bool = False
 
 
 @dataclass(frozen=True)
@@ -159,6 +172,15 @@ class GetnoteConfig:
 
 
 @dataclass(frozen=True)
+class DiarizationConfig:
+    enabled: bool = False
+    model: str = "pyannote/speaker-diarization-3.1"
+    auth_token_env: str = "HUGGING_FACE_HUB_TOKEN"
+    num_speakers: int = 0
+    device: str = "auto"
+
+
+@dataclass(frozen=True)
 class OutputConfig:
     base_dir: Path = field(default_factory=default_base_dir)
     keep_audio: bool = True
@@ -171,6 +193,7 @@ class AppConfig:
     transcription: TranscriptionConfig = field(default_factory=TranscriptionConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     getnote: GetnoteConfig = field(default_factory=GetnoteConfig)
+    diarization: DiarizationConfig = field(default_factory=DiarizationConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     platforms: dict[str, dict[str, Any]] = field(default_factory=dict)
 
@@ -180,6 +203,7 @@ class AppConfig:
         tr = raw.get("transcription", {})
         llm = raw.get("llm", {})
         gn = raw.get("getnote", {})
+        dia = raw.get("diarization", {})
         out = raw.get("output", {})
 
         base_dir_str = out.get("base_dir", "")
@@ -189,9 +213,12 @@ class AppConfig:
         llm_key = llm.get("api_key", "") or os.environ.get("LLM_API_KEY", "")
         llm["api_key"] = llm_key
 
+        # Convert glossary list to tuple for frozen dataclass.
+        tr_glossary = tuple(tr.get("glossary", []))
+
         return cls(
             recording=RecordingConfig(**rec),
-            transcription=TranscriptionConfig(**tr),
+            transcription=TranscriptionConfig(**{**tr, "glossary": tr_glossary}),
             llm=LLMConfig(**{k: v for k, v in llm.items() if k in LLMConfig.__dataclass_fields__}),
             getnote=GetnoteConfig(
                 enabled=gn.get("enabled", False),
@@ -199,6 +226,7 @@ class AppConfig:
                 default_tags=tuple(gn.get("default_tags", ["live2note"])),
                 timeout=gn.get("timeout", 60),
             ),
+            diarization=DiarizationConfig(**dia),
             output=OutputConfig(
                 base_dir=base_dir,
                 keep_audio=out.get("keep_audio", True),

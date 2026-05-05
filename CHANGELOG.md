@@ -1,5 +1,32 @@
 # 更新日志
 
+## v0.1.3 — 增强转写与说话人识别 (2026-05-05)
+
+### 新增
+
+- **增强转写配置**：新增 `initial_prompt`、`glossary`（热词）、`word_timestamps` 配置项
+- **说话人识别（可选）**：集成 pyannote.audio 声纹识别，识别"谁在何时说话"
+  - 需额外安装：`pip install live2note[diarization]`
+  - 需设置环境变量：`HUGGING_FACE_HUB_TOKEN=hf_...`
+  - 自动将说话人标签映射到转写文本
+- **说话人标签写入转写文件**：JSON 转写增加 `speaker` 字段，Markdown 转写增加 `**SPEAKER_00**` 前缀
+- **新增 CLI 命令**：
+  - `live2note speakers <task_id>` — 查看所有说话人列表
+  - `live2note rename-speaker <task_id> <原标签> <新名字>` — 重命名说话人
+- **转写 CLI 参数**：`live2note run` 和 `live2note transcribe` 新增 `--initial-prompt`、`--lang`、`--model` 参数
+- **最终笔记增加说话人信息**：final_note.md 增加「说话人」章节，展示每个说话人的发言次数
+- **新增配置示例**：`config.example.yaml` 新增 `diarization` 配置段
+
+### 变更
+
+- TranscriptionConfig 新增 `initial_prompt`、`glossary`、`word_timestamps` 字段
+- WhisperEngine 支持 `hotwords`、`initial_prompt`、`word_timestamps` 参数传递给 faster-whisper
+- TaskState 新增 `speakers` 字典字段用于说话人重命名映射
+
+### 依赖
+
+- `pyannote.audio>=3.1` 作为可选依赖（`[diarization]` extra）
+
 ## v0.1.2 — 修复 CI lint (2026-05-05)
 
 ### 修复

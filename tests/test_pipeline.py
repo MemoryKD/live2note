@@ -92,7 +92,7 @@ def test_pipeline_transcribe_step(tmp_path: Path):
     mgr.save(state)
 
     mock_segments = [
-        MagicMock(start=0.0, end=5.0, text="test transcription", confidence=-0.1),
+        MagicMock(start=0.0, end=5.0, text="test transcription", confidence=-0.1, speaker=""),
     ]
 
     with patch("live2note.transcriber.WhisperEngine") as MockEngine:

@@ -153,6 +153,15 @@ def run(
     no_record: bool = typer.Option(
         False, "--no-record", help="Skip recording (create task only)"
     ),
+    language: str = typer.Option(
+        "", "--lang", help="Transcription language override (e.g. zh, en)"
+    ),
+    model_size: str = typer.Option(
+        "", "--model", help="Whisper model size override (e.g. large-v3, small)"
+    ),
+    initial_prompt: str = typer.Option(
+        "", "--initial-prompt", help="Initial prompt for whisper (prompt/hotwords)"
+    ),
     config: Path | None = typer.Option(None, "--config", "-c", help="Config file path"),
 ) -> None:
     """Record a live stream, transcribe, and organize knowledge."""
@@ -336,6 +345,20 @@ def run(
     if len(completed) > 0:
         from live2note.pipeline import Pipeline
 
+        # Apply CLI transcription overrides.
+        if language or model_size or initial_prompt:
+            import dataclasses
+            tr = cfg.transcription
+            cfg = dataclasses.replace(
+                cfg,
+                transcription=dataclasses.replace(
+                    tr,
+                    language=language or tr.language,
+                    model_size=model_size or tr.model_size,
+                    initial_prompt=initial_prompt or tr.initial_prompt,
+                ),
+            )
+
         stop_reason = state.stop_reason
         rprint("\n[bold]Finalizing...[/bold]")
         pipeline = Pipeline(mgr, cfg)
@@ -375,6 +398,7 @@ def transcribe(
     task_id: str = typer.Argument(..., help="Task ID to transcribe"),
     language: str = typer.Option("", "--lang", "-l", help="Override language (default from config)"),
     model_size: str = typer.Option("", "--model", "-m", help="Override model size"),
+    initial_prompt: str = typer.Option("", "--initial-prompt", help="Initial prompt for whisper"),
     config: Path | None = typer.Option(None, "--config", "-c"),
 ) -> None:
     """Transcribe all audio segments of a task."""
@@ -397,6 +421,10 @@ def transcribe(
         write_transcript_markdown,
     )
 
+    # Build glossary hotwords string.
+    glossary = cfg.transcription.glossary
+    hotwords = " ".join(glossary) if glossary else ""
+
     engine = WhisperEngine(
         model_size=model_size or cfg.transcription.model_size,
         language=language or cfg.transcription.language,
@@ -404,6 +432,9 @@ def transcribe(
         compute_type=cfg.transcription.compute_type,
         beam_size=cfg.transcription.beam_size,
         vad_filter=cfg.transcription.vad_filter,
+        initial_prompt=initial_prompt or cfg.transcription.initial_prompt,
+        hotwords=hotwords,
+        word_timestamps=cfg.transcription.word_timestamps,
     )
 
     task_dir = mgr.base_dir / task_id
@@ -699,6 +730,7 @@ def _generate_final_note(mgr, state, task_dir, cfg):
         metadata=state.metadata.to_dict(),
         chunks=chunks,
         summaries=summaries,
+        task_dir=task_dir,
     )
 
     # Write outputs.
@@ -795,6 +827,116 @@ def import_getnote(
 
     state = mgr.load(task_id)
     _run_getnote_import(mgr, state, cfg, force=force)
+
+
+# ── speakers ─────────────────────────────────────────────────
+
+
+@app.command()
+def speakers(
+    task_id: str = typer.Argument(..., help="Task ID"),
+    config: Path | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """List all detected speakers and their custom names."""
+    cfg = load_config(config)
+    mgr = _get_manager(cfg)
+
+    if not mgr.task_exists(task_id):
+        rprint(f"[red]Task not found: {task_id}[/red]")
+        raise typer.Exit(1)
+
+    state = mgr.load(task_id)
+    rename_map = state.speakers or {}
+
+    # Collect unique speakers from transcripts.
+    import json as _json
+
+    task_dir = mgr.base_dir / task_id
+    transcripts_dir = task_dir / "transcripts"
+    speaker_set: set[str] = set()
+
+    transcript_files = sorted(transcripts_dir.glob("segment_*.json"))
+    for tf in transcript_files:
+        data = _json.loads(tf.read_text(encoding="utf-8"))
+        for seg in data.get("segments", []):
+            spk = seg.get("speaker", "")
+            if spk:
+                speaker_set.add(spk)
+
+    if not speaker_set:
+        rprint("[yellow]No speaker labels found in transcripts.[/yellow]")
+        rprint("[dim]Run transcription with diarization enabled first.[/dim]")
+        return
+
+    table = Table(title=f"Speakers — {task_id}")
+    table.add_column("Label", style="bold")
+    table.add_column("Display Name")
+    table.add_column("Source")
+
+    for spk in sorted(speaker_set):
+        display = rename_map.get(spk, spk)
+        source = "renamed" if spk in rename_map else "detected"
+        table.add_row(spk, display, source)
+
+    console.print(table)
+    rprint(f"\n[dim]Use 'live2note rename-speaker {task_id} ORIGINAL NEW_NAME' to rename.[/dim]")
+
+
+# ── rename-speaker ────────────────────────────────────────────
+
+
+@app.command(name="rename-speaker")
+def rename_speaker(
+    task_id: str = typer.Argument(..., help="Task ID"),
+    original: str = typer.Argument(..., help="Original speaker label (e.g. SPEAKER_00)"),
+    new_name: str = typer.Argument(..., help="New display name"),
+    config: Path | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Rename a speaker label across all transcript files."""
+    import json as _json
+
+    cfg = load_config(config)
+    mgr = _get_manager(cfg)
+
+    if not mgr.task_exists(task_id):
+        rprint(f"[red]Task not found: {task_id}[/red]")
+        raise typer.Exit(1)
+
+    state = mgr.load(task_id)
+
+    # Update rename map in task state.
+    state.speakers[original] = new_name
+    mgr.save(state)
+
+    # Update all transcript JSON files.
+    task_dir = mgr.base_dir / task_id
+    transcripts_dir = task_dir / "transcripts"
+    updated = 0
+
+    for tf in sorted(transcripts_dir.glob("segment_*.json")):
+        data = _json.loads(tf.read_text(encoding="utf-8"))
+        changed = False
+        for seg in data.get("segments", []):
+            if seg.get("speaker") == original:
+                seg["speaker"] = new_name
+                changed = True
+        if changed:
+            tf.write_text(
+                _json.dumps(data, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            updated += 1
+
+    # Update Markdown transcript files too.
+    for mf in sorted(transcripts_dir.glob("segment_*.md")):
+        content = mf.read_text(encoding="utf-8")
+        old_tag = f"**{original}**"
+        if old_tag in content:
+            content = content.replace(old_tag, f"**{new_name}**")
+            mf.write_text(content, encoding="utf-8")
+
+    rprint(f"[green]Renamed '{original}' -> '{new_name}' in {updated} transcript file(s).[/green]")
+    rprint(f"[dim]Task state updated. Run 'live2note speakers {task_id}' to verify.[/dim]")
 
 
 # ── stop ────────────────────────────────────────────────────

@@ -32,14 +32,17 @@ def write_transcript_json(
     """
     entries = []
     for seg in segments:
-        entries.append({
+        entry = {
             "start": seg.start,
             "end": seg.end,
             "global_start": round(seg.start + global_offset, 3),
             "global_end": round(seg.end + global_offset, 3),
             "text": seg.text,
             "confidence": seg.confidence,
-        })
+        }
+        if seg.speaker:
+            entry["speaker"] = seg.speaker
+        entries.append(entry)
 
     data = {
         "segment_id": segment_id,
@@ -78,7 +81,8 @@ def write_transcript_markdown(
 
     for seg in segments:
         ts = _fmt_ts(seg.start + global_offset)
-        lines.append(f"**[{ts}]** {seg.text}")
+        speaker_tag = f"**{seg.speaker}** " if seg.speaker else ""
+        lines.append(f"{speaker_tag}[{ts}] {seg.text}")
         lines.append("")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)

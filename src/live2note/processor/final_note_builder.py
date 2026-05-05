@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -26,6 +28,7 @@ class FinalNote:
     keywords: list[str] = field(default_factory=list)
     timestamp_index: list[dict[str, Any]] = field(default_factory=list)
     follow_up_questions: list[str] = field(default_factory=list)
+    speaker_info: list[dict[str, Any]] = field(default_factory=list)
 
 
 def build_final_note(
@@ -33,6 +36,7 @@ def build_final_note(
     metadata: dict[str, Any],
     chunks: list[dict[str, Any]],
     summaries: list[dict[str, Any]] | None,
+    task_dir: Path | str | None = None,
 ) -> FinalNote:
     """Assemble a FinalNote from task data.
 
@@ -123,6 +127,10 @@ def build_final_note(
     note.knowledge_sections = _group_by_topic(all_knowledge)
     note.follow_up_questions = _generate_questions(all_key_points, chunks)
 
+    # Build speaker info from transcript files.
+    if task_dir:
+        note.speaker_info = _build_speaker_info(Path(task_dir))
+
     return note
 
 
@@ -143,6 +151,37 @@ def _group_by_topic(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "points": points,
         })
     return sections
+
+
+def _build_speaker_info(task_dir: Path) -> list[dict[str, Any]]:
+    """Extract speaker info from transcript JSON files."""
+    transcripts_dir = task_dir / "transcripts"
+    if not transcripts_dir.is_dir():
+        return []
+
+    speaker_data: dict[str, dict[str, Any]] = {}
+
+    for tf in sorted(transcripts_dir.glob("segment_*.json")):
+        try:
+            data = json.loads(tf.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        for seg in data.get("segments", []):
+            spk = seg.get("speaker", "")
+            if not spk:
+                continue
+            if spk not in speaker_data:
+                speaker_data[spk] = {
+                    "speaker": spk,
+                    "first_seen": seg["global_start"],
+                    "last_seen": seg["global_end"],
+                    "segment_count": 0,
+                }
+            speaker_data[spk]["last_seen"] = seg["global_end"]
+            speaker_data[spk]["segment_count"] += 1
+
+    result = sorted(speaker_data.values(), key=lambda x: x["first_seen"])
+    return result
 
 
 def _generate_questions(key_points: list[str], chunks: list[dict[str, Any]]) -> list[str]:
