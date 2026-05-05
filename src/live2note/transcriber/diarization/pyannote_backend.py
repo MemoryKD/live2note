@@ -55,7 +55,7 @@ class PyannoteDiarizer:
 
         try:
             from pyannote.audio import Pipeline
-        except ImportError as exc:
+        except ImportError:
             self._load_error = (
                 "pyannote.audio is not installed. "
                 "Install it: pip install pyannote.audio"

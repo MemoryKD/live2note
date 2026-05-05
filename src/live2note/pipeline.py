@@ -207,7 +207,7 @@ class Pipeline:
         # Collect speaker label to display name mapping.
         display_names = dict(state.speakers) if state.speakers else {}
 
-        for idx, audio_path_str, seg_duration, segments in segment_results:
+        for idx, audio_path_str, _seg_duration, segments in segment_results:
             audio_path = Path(audio_path_str)
             try:
                 diar_segments = diarizer.diarize(audio_path)
