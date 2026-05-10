@@ -32,7 +32,7 @@ def test_help():
 def test_version():
     result = runner.invoke(app, ["--version"])
     assert result.exit_code == 0
-    assert "0.1.3" in result.output
+    assert "0.1.4" in result.output
 
 
 def test_config_init(tmp_path: Path):
@@ -171,3 +171,77 @@ def test_resume_shows_status(tmp_path: Path, monkeypatch):
     assert result.exit_code == 0
     assert "resumed" in result.output.lower()
     assert "check" in result.output
+
+
+# ── metadata command ──────────────────────────────────────────
+
+
+def test_metadata_command(tmp_path: Path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from live2note.cli import app
+
+    _patch_base_dir(monkeypatch, tmp_path)
+    runner = CliRunner()
+    runner.invoke(app, ["run", "https://example.com/live.m3u8", "--no-check", "--no-record"])
+    task_id = next((tmp_path / "tasks").iterdir()).name
+
+    result = runner.invoke(app, ["metadata", task_id])
+    assert result.exit_code == 0
+    assert "Platform" in result.output
+    assert "Source URL" in result.output
+
+
+def test_metadata_nonexistent(tmp_path: Path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from live2note.cli import app
+
+    _patch_base_dir(monkeypatch, tmp_path)
+    runner = CliRunner()
+
+    result = runner.invoke(app, ["metadata", "nonexistent"])
+    assert result.exit_code == 1
+    assert "not found" in result.output.lower()
+
+
+# ── rebuild-note command ─────────────────────────────────────
+
+
+def test_rebuild_note(tmp_path: Path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from live2note.cli import app
+
+    _patch_base_dir(monkeypatch, tmp_path)
+    runner = CliRunner()
+    runner.invoke(app, ["run", "https://example.com/live.m3u8", "--no-check", "--no-record"])
+    task_id = next((tmp_path / "tasks").iterdir()).name
+    task_dir = tmp_path / "tasks" / task_id
+
+    # Create chunks.
+    chunks_dir = task_dir / "chunks"
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    (chunks_dir / "chunks.json").write_text(
+        json.dumps([{"chunk_id": 1, "start": 0.0, "end": 10.0, "text": "test", "source_segments": []}],
+                   ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    result = runner.invoke(app, ["rebuild-note", task_id])
+    assert result.exit_code == 0
+    assert "Note rebuilt" in result.output
+
+
+def test_rebuild_note_no_chunks(tmp_path: Path, monkeypatch):
+    from typer.testing import CliRunner
+
+    from live2note.cli import app
+
+    _patch_base_dir(monkeypatch, tmp_path)
+    runner = CliRunner()
+    runner.invoke(app, ["run", "https://example.com/live.m3u8", "--no-check", "--no-record"])
+    task_id = next((tmp_path / "tasks").iterdir()).name
+
+    result = runner.invoke(app, ["rebuild-note", task_id])
+    assert result.exit_code == 1

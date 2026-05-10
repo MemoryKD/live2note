@@ -15,14 +15,24 @@ def _now_iso() -> str:
 # ── Enums ───────────────────────────────────────────────────
 
 
+class LiveCheckStatus(str, Enum):
+    LIVE = "live"
+    NOT_LIVE = "not_live"
+    UNKNOWN = "unknown"
+    ERROR = "error"
+
+
 class TaskStatus(str, Enum):
     CREATED = "CREATED"
     CHECKING = "CHECKING"
     WAITING_LIVE = "WAITING_LIVE"
     RECORDING = "RECORDING"
+    STREAM_INTERRUPTED = "STREAM_INTERRUPTED"
+    RECONNECTING = "RECONNECTING"
+    SUSPECTED_LIVE_ENDED = "SUSPECTED_LIVE_ENDED"
+    LIVE_ENDED = "LIVE_ENDED"
     STOP_REQUESTED = "STOP_REQUESTED"
     STOPPING = "STOPPING"
-    LIVE_ENDED = "LIVE_ENDED"
     FINALIZING = "FINALIZING"
     TRANSCRIBING = "TRANSCRIBING"
     PROCESSING = "PROCESSING"
@@ -36,10 +46,12 @@ class TaskStatus(str, Enum):
 
 
 class StopReason(str, Enum):
-    LIVE_ENDED = "live_ended"
-    MANUAL_STOP = "manual_stop"
-    STREAM_ERROR = "stream_error"
+    LIVE_ENDED_CONFIRMED = "live_ended_confirmed"
+    STREAM_INTERRUPTED = "stream_interrupted"
+    FFMPEG_ERROR = "ffmpeg_error"
     NO_DATA_TIMEOUT = "no_data_timeout"
+    MAX_RECONNECT_EXCEEDED = "max_reconnect_exceeded"
+    MANUAL_STOP = "manual_stop"
     USER_KEYBOARD_INTERRUPT = "user_keyboard_interrupt"
     UNKNOWN = "unknown"
 
@@ -70,10 +82,20 @@ STEP_TO_STATUS: dict[str, TaskStatus] = {
 
 @dataclass(frozen=True)
 class CheckResult:
-    """Unified result from an adapter's check_live call."""
+    """Unified result from an adapter's check_live call.
+
+    live_status distinguishes:
+      - LIVE:    platform confirmed the stream is live
+      - NOT_LIVE: platform confirmed the stream is offline
+      - UNKNOWN:  could not determine (e.g. yt-dlp timeout)
+      - ERROR:    unexpected error during check
+
+    is_live is kept for backward-compat but deprecated.
+    """
 
     platform: str
-    is_live: bool
+    is_live: bool = False
+    live_status: str = LiveCheckStatus.UNKNOWN.value
     title: str = ""
     streamer: str = ""
     stream_url: str = ""
@@ -106,7 +128,10 @@ class TaskMetadata:
     platform: str = ""
     room_id: str = ""
     streamer: str = ""
+    author: str = ""
     title: str = ""
+    display_title: str = ""
+    source_url: str = ""
     started_at: str | None = None
     ended_at: str | None = None
     url: str = ""
@@ -117,7 +142,10 @@ class TaskMetadata:
             "platform": self.platform,
             "room_id": self.room_id,
             "streamer": self.streamer,
+            "author": self.author or self.streamer,
             "title": self.title,
+            "display_title": self.display_title,
+            "source_url": self.source_url or self.url,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "url": self.url,
@@ -182,6 +210,17 @@ class TaskState:
     last_stream_check_at: str | None = None
     live_status: str = "unknown"
     metadata: TaskMetadata = field(default_factory=TaskMetadata)
+
+    # ── live end diagnostics ──────────────────────────────────
+    live_end_confirm_count: int = 0
+    stream_error_count: int = 0
+    reconnect_count: int = 0
+    last_ffmpeg_exit_code: int | None = None
+    last_ffmpeg_stderr_tail: str | None = None
+    last_live_check_result: str | None = None
+    last_live_check_at: str | None = None
+    suspected_live_ended_at: str | None = None
+    confirmed_live_ended_at: str | None = None
 
     # ── helpers ──────────────────────────────────────────────
 
@@ -254,6 +293,18 @@ class TaskState:
         self.live_status = "live" if is_live else "ended"
         self.touch()
 
+    def record_live_check(self, check_result: str | None) -> None:
+        """Record a live check result (live/not_live/unknown/error)."""
+        self.last_live_check_result = check_result
+        self.last_live_check_at = _now_iso()
+        if check_result == LiveCheckStatus.LIVE.value:
+            self.live_status = "live"
+        elif check_result == LiveCheckStatus.NOT_LIVE.value:
+            self.live_status = "not_live"
+        elif check_result in (LiveCheckStatus.UNKNOWN.value, LiveCheckStatus.ERROR.value):
+            self.live_status = check_result
+        self.touch()
+
     def finish_step(self, step: str) -> None:
         if step not in self.finished_steps:
             self.finished_steps.append(step)
@@ -272,6 +323,30 @@ class TaskState:
         self.audio_segments.append(
             {"index": index, "file": file, "duration": duration}
         )
+        self.touch()
+
+    def mark_stream_interrupted(self) -> None:
+        self.status = TaskStatus.STREAM_INTERRUPTED.value
+        self.touch()
+
+    def mark_reconnecting(self) -> None:
+        self.status = TaskStatus.RECONNECTING.value
+        self.reconnect_count += 1
+        self.touch()
+
+    def mark_suspected_live_ended(self) -> None:
+        self.status = TaskStatus.SUSPECTED_LIVE_ENDED.value
+        self.suspected_live_ended_at = _now_iso()
+        self.touch()
+
+    def mark_live_ended_confirmed(self) -> None:
+        self.status = TaskStatus.LIVE_ENDED.value
+        self.confirmed_live_ended_at = _now_iso()
+        self.touch()
+
+    def set_ffmpeg_exit_info(self, exit_code: int | None, stderr_tail: str | None) -> None:
+        self.last_ffmpeg_exit_code = exit_code
+        self.last_ffmpeg_stderr_tail = stderr_tail
         self.touch()
 
     def add_transcript(self, index: int, file: str) -> None:
@@ -322,6 +397,15 @@ class TaskState:
             "last_segment_at": self.last_segment_at,
             "last_stream_check_at": self.last_stream_check_at,
             "live_status": self.live_status,
+            "live_end_confirm_count": self.live_end_confirm_count,
+            "stream_error_count": self.stream_error_count,
+            "reconnect_count": self.reconnect_count,
+            "last_ffmpeg_exit_code": self.last_ffmpeg_exit_code,
+            "last_ffmpeg_stderr_tail": self.last_ffmpeg_stderr_tail,
+            "last_live_check_result": self.last_live_check_result,
+            "last_live_check_at": self.last_live_check_at,
+            "suspected_live_ended_at": self.suspected_live_ended_at,
+            "confirmed_live_ended_at": self.confirmed_live_ended_at,
             "metadata": self.metadata.to_dict(),
         }
 
@@ -362,5 +446,14 @@ class TaskState:
             last_segment_at=data.get("last_segment_at"),
             last_stream_check_at=data.get("last_stream_check_at"),
             live_status=data.get("live_status", "unknown"),
+            live_end_confirm_count=data.get("live_end_confirm_count", 0),
+            stream_error_count=data.get("stream_error_count", 0),
+            reconnect_count=data.get("reconnect_count", 0),
+            last_ffmpeg_exit_code=data.get("last_ffmpeg_exit_code"),
+            last_ffmpeg_stderr_tail=data.get("last_ffmpeg_stderr_tail"),
+            last_live_check_result=data.get("last_live_check_result"),
+            last_live_check_at=data.get("last_live_check_at"),
+            suspected_live_ended_at=data.get("suspected_live_ended_at"),
+            confirmed_live_ended_at=data.get("confirmed_live_ended_at"),
             metadata=meta,
         )

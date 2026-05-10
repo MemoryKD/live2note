@@ -23,19 +23,41 @@ def write_final_markdown(note: FinalNote, output_path: Path) -> None:
     """Render the final note as Markdown and write to *output_path*."""
     lines: list[str] = []
 
-    # Title.
-    lines.append(f"# {note.title}")
+    # Title — use display_title if available, fallback to title.
+    h1 = note.display_title or note.title or "直播知识笔记"
+    lines.append(f"# {h1}")
     lines.append("")
+
+    # Recording note for incomplete captures.
+    if note.stop_reason in ("max_reconnect_exceeded", "stream_interrupted"):
+        lines.append("> **⚠️ 提示：本次录制因网络中断或直播流异常而提前结束，"
+                      "部分内容可能未完整录制。**")
+        lines.append("")
+
+    # Platform display name.
+    platform_name = {"douyin": "抖音", "bilibili": "B站", "generic": "通用直播流"}.get(
+        note.platform, note.platform or "-"
+    )
 
     # Basic info.
     lines.append("## 基本信息")
-    lines.append(f"- 平台：{note.platform or '-'}")
-    lines.append(f"- 主播：{note.streamer or '-'}")
+    lines.append(f"- 平台：{platform_name}")
+    lines.append(f"- 主播：{note.author or note.streamer or '-'}")
     lines.append(f"- 直播标题：{note.stream_title or '-'}")
     lines.append(f"- 来源链接：{note.source_url or '-'}")
     lines.append(f"- 开始时间：{note.started_at or '-'}")
     lines.append(f"- 结束时间：{note.ended_at or '-'}")
     lines.append(f"- 任务 ID：{note.task_id}")
+    if note.duration:
+        lines.append(f"- 录制时长：{note.duration}")
+    if note.stop_reason:
+        status_display = {
+            "manual_stop": "手动停止",
+            "live_ended_confirmed": "完整",
+            "max_reconnect_exceeded": "重连结束（未完整）",
+            "stream_interrupted": "流中断",
+        }.get(note.stop_reason, note.stop_reason)
+        lines.append(f"- 录制状态：{status_display}")
     lines.append(f"- 标签：{', '.join(note.tags)}")
     lines.append("")
 

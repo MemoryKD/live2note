@@ -8,7 +8,7 @@ import subprocess
 
 from live2note.adapters.base import BaseAdapter
 from live2note.logger import get_logger
-from live2note.models.task import CheckResult
+from live2note.models.task import CheckResult, LiveCheckStatus
 
 log = get_logger("adapter.bilibili")
 
@@ -52,6 +52,7 @@ class BilibiliAdapter(BaseAdapter):
             return CheckResult(
                 platform="bilibili",
                 is_live=False,
+                live_status=LiveCheckStatus.ERROR.value,
                 room_id=room_id,
                 error=f"yt-dlp error: {exc}",
             )
@@ -76,9 +77,12 @@ class BilibiliAdapter(BaseAdapter):
             title[:60] if title else "(empty)",
         )
 
+        live_status = LiveCheckStatus.LIVE.value if is_live else LiveCheckStatus.NOT_LIVE.value
+
         return CheckResult(
             platform="bilibili",
             is_live=is_live,
+            live_status=live_status,
             title=title,
             streamer=streamer,
             stream_url=stream_url,

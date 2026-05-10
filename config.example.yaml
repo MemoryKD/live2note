@@ -10,9 +10,13 @@ recording:
   audio_channels: 1            # mono
   ffmpeg_path: "ffmpeg"        # path to ffmpeg binary
   stop_grace_seconds: 10       # seconds to wait for graceful ffmpeg stop
-  no_data_timeout_seconds: 180 # stop if no new segment within this time
+  no_data_timeout_seconds: 600 # stop if no new segment within this time (10 min)
   live_check_interval_seconds: 60  # how often to check if stream is still live
-  max_live_check_failures: 3   # consecutive failures before auto-stop
+  max_live_check_failures: 5   # consecutive ERROR/UNKNOWN checks before auto-stop
+  live_end_confirmations: 3     # consecutive NOT_LIVE checks before confirming live ended
+  reconnect_enabled: true       # auto-reconnect on stream interruption
+  reconnect_delay_seconds: 10   # delay between reconnect attempts
+  max_reconnect_attempts: 20    # total reconnect attempts before giving up
 
 # ── Transcription ──────────────────────────────────────────
 transcription:
@@ -90,12 +94,13 @@ llm:
     api_key_env: "ANTHROPIC_API_KEY"
 
 # ── getnote integration ────────────────────────────────────
+# live2note only imports the current task's notes/final_note.md.
+# Never imports transcripts, chunks, summaries, or other tasks.
 getnote:
   enabled: false               # set true to auto-import after processing
-  command: 'getnote save'  # content passed directly as positional arg
   default_tags:
     - "live2note"
-  timeout: 60                  # seconds
+  timeout: 120                 # seconds
 
 # ── Output ─────────────────────────────────────────────────
 output:
@@ -109,3 +114,9 @@ platforms:
     quality: "best"
   douyin:
     quality: "best"
+    resolver:
+      timeout: 30                     # seconds for each resolution attempt
+      cookie_file: ""                 # optional: path to Netscape-format cookies.txt
+      streamlink_enabled: true        # use streamlink as resolution strategy
+      yt_dlp_enabled: true            # use yt-dlp as resolution strategy
+      stream_url_ttl: 3600            # how long a resolved URL is considered fresh

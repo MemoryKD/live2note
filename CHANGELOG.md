@@ -1,5 +1,45 @@
 # 更新日志
 
+## v0.1.4 — 抖音工作流、直播误判修复、getnote 安全加固 (2026-05-10)
+
+### 修复
+
+- **直播结束误判彻底修复**：解决因网络波动、HLS 地址过期、check_live 失败等导致直播被误判为"已结束"的问题
+- **单次 ffmpeg 退出不再判定为直播结束**：ffmpeg 退出后自动触发重连流程
+- **单次 check_live 失败不再判定为直播结束**：区分 ERROR/UNKNOWN 与 NOT_LIVE
+- **仅连续多次 NOT_LIVE 才确认直播结束**（默认 3 次），避免偶发超时触发停止
+- **getnote 导入仅限当前任务**：新增路径校验，禁止导入其他任务、transcripts、chunks、summaries
+- **抖音 metadata 标题修复**：标题不再回退到 task_id，使用 display_title 格式
+- **source_url 不再被 stream_url 覆盖**：原始直播间地址始终保留
+
+### 新增
+
+- **抖音多级解析工作流**：`--stream-url` → yt-dlp → streamlink → page_public_data → Playwright → 手动兜底
+- **DouyinPageResolver**：支持 `v.douyin.com` 短链重定向、`webcast.amemv.com` 页面 FLV 提取
+- **Playwright headed 降级**：遇到强反爬房间时自动启动 Chromium 拦截流地址
+- **ResolveResult 数据模型**：独立于 CheckResult，描述流地址解析结果
+- **`live2note resolve` 命令**：只解析直播流，不录制，默认脱敏显示
+- **`live2note metadata` 命令**：查看当前任务完整 metadata
+- **`live2note rebuild-note` 命令**：从已有数据重建 final_note.md
+- **`import-getnote --dry-run`**：预览导入目标，不真正调用 API
+- **safe_url 日志工具**：全链路脱敏 stream URL
+- **LiveCheckStatus 枚举**：LIVE / NOT_LIVE / UNKNOWN / ERROR
+- **LiveMonitor 三态区分**：LIVE 重置、NOT_LIVE 确认、ERROR 计数
+- **FfmpegRecorder 重连循环**：失败后自动重解析 + 重试（最多 20 次）
+- **`--no-auto-stop` / `--max-reconnect-attempts` / `--cookie-file` / `--debug-resolve` / `--show-stream-url` 参数**
+- **display_title / author 字段**：TaskMetadata 统一，getnote 标题从 markdown H1 提取
+- **`final_note.md` 增加录制时长、录制状态、平台中文化**
+
+### 变更
+
+- `no_data_timeout_seconds` 默认 180→600（10 分钟）
+- `max_live_check_failures` 默认 3→5（仅对 ERROR/UNKNOWN 生效）
+- adapter `check_live` 返回 `live_status` 替代二元 `is_live`
+- `getnote.command` 字段移除（统一使用 HTTP API）
+- getnote 导入前强制路径校验（名称、父目录、task 内、非空）
+- 录制中断重连使用 `safe_url()` 记录
+- 测试从 224 增加到 322
+
 ## v0.1.3 — 增强转写与说话人识别 (2026-05-05)
 
 ### 新增

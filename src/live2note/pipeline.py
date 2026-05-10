@@ -393,6 +393,7 @@ class Pipeline:
             chunks=chunks,
             summaries=summaries,
             task_dir=task_dir,
+            stop_reason=state.stop_reason or "",
         )
 
         notes_dir = task_dir / "notes"
@@ -417,16 +418,23 @@ class Pipeline:
     def _step_import_getnote(self, state: TaskState) -> None:
         from datetime import datetime, timezone
 
-        from live2note.storage.getnote import import_to_getnote
+        from live2note.storage.getnote import (
+            import_to_getnote,
+            validate_final_note_path,
+        )
 
         if state.getnote_imported:
             return
 
-        if not state.final_note_path:
-            return
+        task_dir = self._mgr.base_dir / state.task_id
+        note_path_default = task_dir / "notes" / "final_note.md"
+        final_note_str = state.final_note_path or str(note_path_default)
 
-        md_path = Path(state.final_note_path)
-        if not md_path.is_file():
+        # Validate — raises ValueError if the path is invalid.
+        try:
+            md_path = validate_final_note_path(task_dir, final_note_str)
+        except ValueError as exc:
+            log.warning("getnote import skipped: %s", exc)
             return
 
         gn = self._cfg.getnote
@@ -435,7 +443,6 @@ class Pipeline:
 
         result = import_to_getnote(
             file_path=md_path,
-            command_template=gn.command,
             title=title,
             tags=tags,
             timeout=gn.timeout,

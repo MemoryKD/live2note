@@ -1,4 +1,8 @@
-"""getnote integration — import notes via the Open API."""
+"""getnote integration — import final_note.md via the Open API.
+
+Only imports ``data/tasks/{task_id}/notes/final_note.md``.
+Never imports directories, other tasks, transcripts, chunks, or summaries.
+"""
 
 from __future__ import annotations
 
@@ -47,28 +51,111 @@ class GetnoteResult:
     stderr: str = ""
 
 
+# ── path validation ─────────────────────────────────────────
+
+
+def validate_final_note_path(task_dir: Path, final_note_path: Path | str) -> Path:
+    """Validate that *final_note_path* is safe and correct.
+
+    Rules:
+      - Must resolve within *task_dir* (no path traversal).
+      - Filename must be ``final_note.md``.
+      - Parent directory must be ``notes/``.
+      - Must be a regular file (not a directory or symlink).
+      - Content must be non-empty.
+
+    Returns the resolved Path on success.
+    """
+    final_note_path = Path(final_note_path)
+    resolved_task = task_dir.resolve()
+    resolved_note = final_note_path.resolve()
+
+    # 1. Must be inside task directory.
+    task_prefix = str(resolved_task) + os.sep
+    if not str(resolved_note).startswith(task_prefix):
+        raise ValueError(
+            "Invalid final note path: file is outside the task directory.\n"
+            f"  Task directory: {resolved_task}\n"
+            f"  Note path:      {resolved_note}"
+        )
+
+    # 2. Must be a file, not a directory.
+    if resolved_note.is_dir():
+        raise ValueError(
+            "Invalid final note path: points to a directory, not a file.\n"
+            f"  Path: {resolved_note}"
+        )
+
+    # 3. Must be named "final_note.md".
+    if resolved_note.name != "final_note.md":
+        raise ValueError(
+            f"Invalid final note path: only 'final_note.md' can be imported.\n"
+            f"  Got: {resolved_note.name}"
+        )
+
+    # 4. Must be in a "notes/" directory.
+    if resolved_note.parent.name != "notes":
+        raise ValueError(
+            "Invalid final note path: must be in a 'notes/' directory.\n"
+            f"  Got: {resolved_note.parent}"
+        )
+
+    # 5. Must exist.
+    if not resolved_note.is_file():
+        raise ValueError(
+            f"final_note.md not found. Generate it first with 'live2note save'.\n"
+            f"  Expected: {resolved_note}"
+        )
+
+    # 6. Must not be empty.
+    if resolved_note.stat().st_size == 0:
+        raise ValueError(
+            f"final_note.md is empty. Cannot import an empty note.\n"
+            f"  Path: {resolved_note}"
+        )
+
+    return resolved_note
+
+
+# ── title extraction ────────────────────────────────────────
+
+
+def extract_markdown_title(content: str) -> str:
+    """Extract the first level-1 heading from Markdown content.
+
+    Returns the heading text without the ``# `` prefix, or empty string.
+    """
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("# ") and not stripped.startswith("## "):
+            return stripped[2:].strip()
+    return ""
+
+
+# ── import ──────────────────────────────────────────────────
+
+
 def import_to_getnote(
     file_path: Path | str,
-    command_template: str = "getnote save",
     title: str = "",
     tags: list[str] | None = None,
     timeout: int = 120,
+    dry_run: bool = False,
 ) -> GetnoteResult:
-    """Read *file_path* and import its Markdown content to getnote via HTTP API.
+    """Import a single Markdown file to getnote via the HTTP API.
 
     Args:
-        file_path: Path to the Markdown file to import.
-        command_template: Unused (kept for backward compat).
+        file_path: Path to the Markdown file (must be final_note.md).
         title: Note title.
         tags: Optional tags.
         timeout: Total timeout in seconds for API calls + polling.
+        dry_run: If True, only validate and preview — no API call.
 
     Returns:
         GetnoteResult with success status and output.
     """
-    _ = command_template  # backward compat
-
     file_path = Path(file_path)
+
     if not file_path.is_file():
         return GetnoteResult(
             success=False,
@@ -87,6 +174,17 @@ def import_to_getnote(
         return GetnoteResult(
             success=False,
             message=f"File is empty: {file_path}",
+        )
+
+    title = title or file_path.stem
+    char_count = len(content)
+
+    # Dry-run: preview only.
+    if dry_run:
+        log.info("getnote dry-run: would import %s (%d chars)", file_path.name, char_count)
+        return GetnoteResult(
+            success=True,
+            message=f"[dry-run] Would import: {file_path.name} ({char_count} chars)",
         )
 
     api_key, client_id = _load_auth()
@@ -108,12 +206,12 @@ def import_to_getnote(
     payload = {
         "note_type": "plain_text",
         "content": content,
-        "title": title or file_path.stem,
+        "title": title,
     }
     if tags:
         payload["tags"] = tags
 
-    log.info("Calling getnote API: save note (%d chars)", len(content))
+    log.info("Calling getnote API: save note (%d chars, title=%s)", char_count, title)
 
     deadline = time.monotonic() + timeout
 
@@ -142,7 +240,6 @@ def import_to_getnote(
     data = body.get("data", {})
     task_id = data.get("task_id") or ""
     if not task_id:
-        # Check for tasks array (link-style response).
         tasks = data.get("tasks", [])
         if tasks:
             task_id = tasks[0].get("task_id", "")

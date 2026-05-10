@@ -11,9 +11,12 @@ from rich.table import Table
 
 from live2note import __version__
 from live2note.config import AppConfig, config_summary, init_config, load_config
-from live2note.logger import console, setup_logging
+from live2note.logger import console, get_logger, setup_logging
 from live2note.models.task import TaskStatus
 from live2note.task_manager import TaskManager
+from live2note.utils.safe_url import safe_url, safe_url_full, safe_url_short
+
+log = get_logger("cli")
 
 app = typer.Typer(
     name="live2note",
@@ -24,6 +27,13 @@ app = typer.Typer(
 
 def _get_manager(cfg: AppConfig) -> TaskManager:
     return TaskManager(cfg.output.base_dir)
+
+
+def _platform_display_name(platform: str) -> str:
+    """Map platform key to Chinese display name."""
+    return {"douyin": "抖音", "bilibili": "B站", "generic": "通用直播流"}.get(
+        platform, platform
+    )
 
 
 def _status_style(status: str) -> str:
@@ -79,7 +89,7 @@ def main(
 
 
 def _print_task_info(
-    state, url, resolved_platform, segment, getnote, mgr, cfg, check_error, no_check
+    state, url, resolved_platform, segment, getnote, mgr, cfg, check_error, no_check, show_stream_url=False,
 ):
 
     lines = [f"[bold green]Task created:[/bold green] {state.task_id}"]
@@ -98,7 +108,8 @@ def _print_task_info(
             lines.append(f"[bold]Room ID:[/bold]    {state.metadata.room_id}")
         if state.metadata.stream_url:
             su = state.metadata.stream_url
-            lines.append(f"[bold]Stream URL:[/bold] {su[:80]}{'...' if len(su) > 80 else ''}")
+            display = safe_url_full(su) if show_stream_url else safe_url(su, 60)
+            lines.append(f"[bold]Stream URL:[/bold] {display}")
 
     lines.append(f"[bold]Duration:[/bold]   {state.duration or 'manual'} min")
     lines.append(f"[bold]Segment:[/bold]    {segment} min")
@@ -123,6 +134,34 @@ def _handle_monitor_stop(mgr, state, task_dir, reason):
     write_stop_flag(task_dir, reason)
     state.request_stop(reason)
     mgr.save(state)
+
+
+def _make_reconnect_fn(mgr, state, adapter, cfg):
+    """Create reconnect callback for FfmpegRecorder. Returns None if reconnect disabled."""
+    if not cfg.recording.reconnect_enabled:
+        return None
+
+    def reconnect(seg_index: int, attempt: int) -> str | None:
+        state.mark_reconnecting()
+        mgr.save(state)
+        # Try adapter re-resolve first.
+        try:
+            new_url = adapter.resolve_stream_url(state.url)
+            if new_url:
+                state.metadata.stream_url = new_url
+                mgr.save_metadata(state)
+                log.info("Re-resolved stream URL: %s", safe_url(new_url))
+                return new_url
+        except Exception as exc:
+            log.warning("Stream re-resolve failed on attempt %d: %s", attempt, exc)
+        # Fallback: try last known stream URL (may be expired, but worth trying).
+        last_url = state.metadata.stream_url
+        if last_url:
+            log.info("Adapter re-resolve returned empty, trying last known URL")
+            return last_url
+        return None
+
+    return reconnect
 
 
 # ── run ─────────────────────────────────────────────────────
@@ -152,6 +191,26 @@ def run(
     ),
     no_record: bool = typer.Option(
         False, "--no-record", help="Skip recording (create task only)"
+    ),
+    no_auto_stop: bool = typer.Option(
+        False, "--no-auto-stop",
+        help="Disable automatic stop on live end (recording until manual stop or duration limit)",
+    ),
+    max_reconnect_attempts: int = typer.Option(
+        -1, "--max-reconnect-attempts",
+        help="Override max reconnect attempts (-1 = use config)",
+    ),
+    cookie_file: Path | None = typer.Option(
+        None, "--cookie-file",
+        help="Netscape-format cookies file for yt-dlp and streamlink resolvers",
+    ),
+    debug_resolve: bool = typer.Option(
+        False, "--debug-resolve",
+        help="Show per-resolver diagnostics during stream URL resolution",
+    ),
+    show_stream_url: bool = typer.Option(
+        False, "--show-stream-url",
+        help="Display the full resolved stream URL in console output",
     ),
     language: str = typer.Option(
         "", "--lang", help="Transcription language override (e.g. zh, en)"
@@ -196,11 +255,17 @@ def run(
         rprint("[dim]Checking live status...[/dim]")
         result = adapter.check_live(url)
 
-        state.metadata.title = result.title
-        state.metadata.streamer = result.streamer
-        state.metadata.room_id = result.room_id
         state.metadata.platform = result.platform
+        state.metadata.room_id = result.room_id
+        state.metadata.streamer = result.streamer
+        state.metadata.author = result.streamer  # map for Douyin
+        state.metadata.title = result.title or "直播"
+        state.metadata.source_url = url  # original user URL, never stream URL
         state.metadata.stream_url = result.stream_url
+        state.metadata.display_title = (
+            f"{_platform_display_name(result.platform)}直播知识笔记："
+            f"{result.streamer or '未知主播'} - {result.title or '直播'}"
+        )
         state.source_type = result.platform
         state.finish_step("check")
         mgr.save(state)
@@ -214,7 +279,8 @@ def run(
         mgr.save(state)
 
     # Print task info.
-    _print_task_info(state, url, resolved_platform, segment, getnote, mgr, cfg, check_error, no_check)
+    _print_task_info(state, url, resolved_platform, segment, getnote, mgr, cfg, check_error, no_check,
+                     show_stream_url=show_stream_url)
 
     if no_record:
         rprint("[dim]Recording skipped (--no-record).[/dim]")
@@ -242,7 +308,8 @@ def run(
     mgr.save(state)
 
     rprint("\n[bold green]Recording started.[/bold green]  Ctrl+C to stop.")
-    rprint(f"[dim]Stream: {resolved_stream_url[:80]}[/dim]")
+    stream_display = safe_url_full(resolved_stream_url) if show_stream_url else safe_url(resolved_stream_url, 80)
+    rprint(f"[dim]Stream: {stream_display}[/dim]")
     rprint(f"[dim]Segment: {segment} min | Duration: {duration or 'unlimited'} min[/dim]\n")
 
     import os
@@ -262,9 +329,9 @@ def run(
     state.pid = os.getpid()
     mgr.save(state)
 
-    # Start live monitor (background thread).
+    # Start live monitor (background thread) — skip if --no-auto-stop.
     monitor = None
-    if not no_check and resolved_platform != "generic":
+    if not no_auto_stop and not no_check and resolved_platform != "generic":
         from live2note.recorder.live_monitor import LiveMonitor
 
         monitor = LiveMonitor(
@@ -275,10 +342,15 @@ def run(
             save_fn=lambda s: mgr.save(s),
             interval_seconds=cfg.recording.live_check_interval_seconds,
             max_failures=cfg.recording.max_live_check_failures,
+            live_end_confirmations=cfg.recording.live_end_confirmations,
         )
         monitor.start()
+    elif no_auto_stop:
+        log.info("Auto-stop disabled by --no-auto-stop — recording until manual stop or duration limit.")
 
     try:
+        reconn_max = max_reconnect_attempts if max_reconnect_attempts >= 0 else cfg.recording.max_reconnect_attempts
+        reconn_fn = _make_reconnect_fn(mgr, state, adapter, cfg)
         completed = recorder.record(
             stream_url=resolved_stream_url,
             output_dir=audio_dir,
@@ -286,6 +358,9 @@ def run(
             total_seconds=total_seconds,
             task_dir=task_dir,
             no_data_timeout=cfg.recording.no_data_timeout_seconds,
+            reconnect_fn=reconn_fn,
+            max_reconnect_attempts=reconn_max,
+            reconnect_delay=cfg.recording.reconnect_delay_seconds,
         )
     except FileNotFoundError:
         msg = f"ffmpeg not found at '{cfg.recording.ffmpeg_path}'. Install it and try again."
@@ -297,9 +372,14 @@ def run(
         if monitor:
             monitor.stop()
 
-    # Record ffmpeg PID for stop command.
+    # Record ffmpeg PID and exit info for diagnostics.
     if recorder.last_ffmpeg_pid:
         state.ffmpeg_pid = recorder.last_ffmpeg_pid
+    if recorder.last_ffmpeg_exit_code is not None:
+        state.set_ffmpeg_exit_info(
+            recorder.last_ffmpeg_exit_code,
+            recorder.last_ffmpeg_stderr,
+        )
 
     # Persist segments to task state.
     for i, seg in enumerate(completed, start=1):
@@ -321,15 +401,23 @@ def run(
     if recorder.stop_requested or stop_flag:
         reason = (stop_flag or {}).get("reason", StopReason.MANUAL_STOP.value)
         state.mark_stopped(reason)
-        rprint(f"\n[yellow]Recording stopped ({reason}).[/yellow]  {len(completed)} segment(s) saved.")
+        if reason == StopReason.LIVE_ENDED_CONFIRMED.value:
+            rprint(f"\n[green]Live stream ended (confirmed).[/green]  {len(completed)} segment(s) recorded.")
+        elif reason == StopReason.MANUAL_STOP.value:
+            rprint(f"\n[yellow]Recording stopped (manual).[/yellow]  {len(completed)} segment(s) saved.")
+        elif reason in (StopReason.STREAM_INTERRUPTED.value, StopReason.MAX_RECONNECT_EXCEEDED.value):
+            rprint(f"\n[yellow]Recording stopped ({reason}).[/yellow]  {len(completed)} segment(s) saved.")
+        elif reason == StopReason.NO_DATA_TIMEOUT.value:
+            rprint(f"\n[yellow]No data for too long — stopped ({reason}).[/yellow]  {len(completed)} segment(s) saved.")
+        else:
+            rprint(f"\n[yellow]Recording stopped ({reason}).[/yellow]  {len(completed)} segment(s) saved.")
         mgr.save(state)
         rprint(f"[dim]Output: {audio_dir}[/dim]")
     elif len(completed) > 0:
         state.finish_step("record")
-        # Check if live ended.
-        if state.live_status == "ended":
-            state.mark_stopped(StopReason.LIVE_ENDED.value)
-            rprint(f"\n[green]Live stream ended.[/green]  {len(completed)} segment(s) recorded.")
+        # Live end already confirmed by LiveMonitor (with stop flag).
+        if state.confirmed_live_ended_at:
+            rprint(f"\n[green]Live stream ended (confirmed).[/green]  {len(completed)} segment(s) recorded.")
         else:
             rprint(f"\n[green]Recording complete.[/green]  {len(completed)} segment(s) saved.")
     else:
@@ -731,6 +819,7 @@ def _generate_final_note(mgr, state, task_dir, cfg):
         chunks=chunks,
         summaries=summaries,
         task_dir=task_dir,
+        stop_reason=state.stop_reason or "",
     )
 
     # Write outputs.
@@ -756,34 +845,54 @@ def _generate_final_note(mgr, state, task_dir, cfg):
         _run_getnote_import(mgr, state, cfg)
 
 
-def _run_getnote_import(mgr, state, cfg, force: bool = False) -> None:
-    """Import final_note.md into getnote. Non-blocking on failure."""
+def _run_getnote_import(mgr, state, cfg, force: bool = False, dry_run: bool = False) -> None:
+    """Import final_note.md into getnote. Only imports the current task's note."""
     from datetime import datetime, timezone
 
-    from live2note.storage.getnote import import_to_getnote
+    from live2note.storage.getnote import import_to_getnote, validate_final_note_path
 
     if state.getnote_imported and not force:
         rprint("[dim]Already imported to getnote.[/dim]")
         return
 
-    if not state.final_note_path:
-        rprint("[yellow]No final note to import. Run 'save' first.[/yellow]")
-        return
+    task_dir = mgr.base_dir / state.task_id
+    note_path_default = task_dir / "notes" / "final_note.md"
 
-    md_path = Path(state.final_note_path)
-    if not md_path.is_file():
-        rprint(f"[yellow]Final note not found: {md_path}. Run 'save' first.[/yellow]")
+    # Determine the final note path.
+    final_note_str = state.final_note_path or str(note_path_default)
+
+    # Validate — raises ValueError if invalid.
+    try:
+        md_path = validate_final_note_path(task_dir, final_note_str)
+    except ValueError as exc:
+        rprint(f"[red]{exc}[/red]")
         return
 
     gn = cfg.getnote
-    title = state.metadata.title or state.task_id
+    # Use display_title from metadata, fall back to task_id only as last resort.
+    title = (
+        state.metadata.display_title
+        or state.metadata.title
+        or state.task_id
+    )
     tags = list(gn.default_tags) + list(state.getnote_tags)
 
-    rprint(f"[dim]Importing to getnote: {md_path.name}...[/dim]")
+    if dry_run:
+        char_count = md_path.stat().st_size
+        rprint(Panel(
+            f"[bold]task_id:[/bold] {state.task_id}\n"
+            f"[bold]file:[/bold]     {md_path}\n"
+            f"[bold]title:[/bold]    {title}\n"
+            f"[bold]chars:[/bold]    {char_count}",
+            title="getnote import --dry-run",
+            border_style="blue",
+        ))
+        return
+
+    rprint(f"[dim]Importing to getnote: {md_path.name} ({md_path.stat().st_size} chars)[/dim]")
 
     result = import_to_getnote(
         file_path=md_path,
-        command_template=gn.command,
         title=title,
         tags=tags,
         timeout=gn.timeout,
@@ -808,16 +917,15 @@ def _run_getnote_import(mgr, state, cfg, force: bool = False) -> None:
     mgr.save(state)
 
 
-# ── import-getnote ──────────────────────────────────────────
+# ── metadata ────────────────────────────────────────────────
 
 
-@app.command(name="import-getnote")
-def import_getnote(
-    task_id: str = typer.Argument(..., help="Task ID to import"),
-    force: bool = typer.Option(False, "--force", "-f", help="Re-import even if already done"),
+@app.command()
+def metadata(
+    task_id: str = typer.Argument(..., help="Task ID to show metadata for"),
     config: Path | None = typer.Option(None, "--config", "-c"),
 ) -> None:
-    """Import the task's final note into getnote."""
+    """Show task metadata (platform, source_url, title, author, etc.)."""
     cfg = load_config(config)
     mgr = _get_manager(cfg)
 
@@ -826,7 +934,99 @@ def import_getnote(
         raise typer.Exit(1)
 
     state = mgr.load(task_id)
-    _run_getnote_import(mgr, state, cfg, force=force)
+    meta = state.metadata
+
+    table = Table(title=f"Metadata — {task_id}")
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+
+    table.add_row("Platform", meta.platform or "-")
+    table.add_row("Source URL", meta.source_url or meta.url or "-")
+    table.add_row("Room ID", meta.room_id or "-")
+    table.add_row("Author / Streamer", meta.author or meta.streamer or "-")
+    table.add_row("Title", meta.title or "-")
+    table.add_row("Display Title", meta.display_title or "-")
+    table.add_row("Started at", state.started_at or "-")
+    table.add_row("Ended at", state.ended_at or "-")
+    if state.duration:
+        table.add_row("Duration", f"{state.duration} min")
+    table.add_row("Stop reason", state.stop_reason or "-")
+
+    console.print(table)
+
+
+# ── rebuild-note ────────────────────────────────────────────
+
+
+@app.command(name="rebuild-note")
+def rebuild_note(
+    task_id: str = typer.Argument(..., help="Task ID to rebuild final note for"),
+    config: Path | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Rebuild final_note.md from existing transcripts and summaries.
+
+    Does not re-record or re-transcribe. Updates title and basic info.
+    """
+    cfg = load_config(config)
+    mgr = _get_manager(cfg)
+
+    if not mgr.task_exists(task_id):
+        rprint(f"[red]Task not found: {task_id}[/red]")
+        raise typer.Exit(1)
+
+    state = mgr.load(task_id)
+    task_dir = mgr.base_dir / task_id
+
+    # Check prereqs.
+    chunks_path = task_dir / "chunks" / "chunks.json"
+    if not chunks_path.is_file():
+        rprint("[red]No chunks found — run 'process' first.[/red]")
+        raise typer.Exit(1)
+
+    # Recompute display_title from current metadata.
+    platform_key = state.metadata.platform or "douyin"
+    platform_display = _platform_display_name(platform_key)
+    author_val = state.metadata.author or state.metadata.streamer or "未知主播"
+    title_val = state.metadata.title or "直播"
+    state.metadata.display_title = (
+        f"{platform_display}直播知识笔记：{author_val} - {title_val}"
+    )
+    state.metadata.author = author_val
+    mgr.save_metadata(state)
+    mgr.save(state)
+
+    # Regenerate final_note.
+    _generate_final_note(mgr, state, task_dir, cfg)
+    rprint("[green]Note rebuilt.[/green]")
+    rprint(f"  Display title: {state.metadata.display_title}")
+    rprint(f"  Platform:       {platform_display}")
+    rprint(f"  Author:         {author_val}")
+
+
+# ── import-getnote ──────────────────────────────────────────
+
+
+@app.command(name="import-getnote")
+def import_getnote(
+    task_id: str = typer.Argument(..., help="Task ID to import"),
+    force: bool = typer.Option(False, "--force", "-f", help="Re-import even if already done"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be imported without actually doing it"),
+    config: Path | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Import the current task's final_note.md into getnote.
+
+    Only imports notes/final_note.md of the specified task.
+    Never imports transcripts, chunks, summaries, or other tasks.
+    """
+    cfg = load_config(config)
+    mgr = _get_manager(cfg)
+
+    if not mgr.task_exists(task_id):
+        rprint(f"[red]Task not found: {task_id}[/red]")
+        raise typer.Exit(1)
+
+    state = mgr.load(task_id)
+    _run_getnote_import(mgr, state, cfg, force=force, dry_run=dry_run)
 
 
 # ── speakers ─────────────────────────────────────────────────
@@ -1110,6 +1310,18 @@ def status(
     if state.stop_reason:
         table.add_row("Stop reason", state.stop_reason)
 
+    # Diagnostic fields
+    if state.live_end_confirm_count:
+        table.add_row("Live end confirmations", str(state.live_end_confirm_count))
+    if state.stream_error_count:
+        table.add_row("Stream errors", str(state.stream_error_count))
+    if state.reconnect_count:
+        table.add_row("Reconnects", str(state.reconnect_count))
+    if state.last_ffmpeg_exit_code is not None:
+        table.add_row("Last ffmpeg exit", str(state.last_ffmpeg_exit_code))
+    if state.confirmed_live_ended_at:
+        table.add_row("Live ended at", state.confirmed_live_ended_at)
+
     # Pipeline progress
     table.add_row("--- Pipeline ---", "---")
     for step in PIPELINE_STEPS:
@@ -1301,3 +1513,102 @@ def export_prompts(
     rprint(f"[green]Exported {len(chunks)} prompt(s) to: {prompts_dir}[/green]")
     rprint("[dim]Copy these prompts to any LLM or agent for processing.[/dim]")
     rprint("[dim]Then use 'live2note import-summary' to import results.[/dim]")
+
+
+# ── resolve ──────────────────────────────────────────────────
+
+
+@app.command()
+def resolve(
+    url: str = typer.Argument(..., help="Live room URL to resolve"),
+    platform: str = typer.Option(
+        "auto", "--platform", "-p", help="Platform: auto | douyin | bilibili | generic"
+    ),
+    show_stream_url: bool = typer.Option(
+        False, "--show-stream-url", help="Display the full resolved stream URL"
+    ),
+    debug_resolve: bool = typer.Option(
+        False, "--debug-resolve", help="Show per-resolver diagnostics"
+    ),
+    cookie_file: Path | None = typer.Option(
+        None, "--cookie-file", help="Netscape-format cookies file"
+    ),
+    config: Path | None = typer.Option(None, "--config", "-c"),
+) -> None:
+    """Resolve a live room URL to a recordable stream URL (no recording).
+
+    Uses multi-level resolution strategy depending on the platform.
+    For Douyin: tries yt-dlp, then streamlink, then falls back to manual.
+    """
+    from live2note.adapters import get_adapter_or_raise
+
+    _cfg = load_config(config)
+
+    # Resolve adapter.
+    try:
+        adapter = get_adapter_or_raise(url, platform)
+    except ValueError as exc:
+        rprint(f"[red]Error:[/red] {exc}")
+        raise typer.Exit(1) from None
+
+    rprint(f"[bold]Platform:[/bold] {adapter.get_platform()}")
+    rprint(f"[bold]URL:[/bold] {url}")
+
+    # Try resolution via adapter.resolve_stream_url (which uses DouyinResolver for douyin).
+    try:
+        stream_url = adapter.resolve_stream_url(url)
+    except Exception as exc:
+        rprint(f"[red]Resolution error:[/red] {exc}")
+        raise typer.Exit(1) from None
+
+    # If adapter has access to DouyinResolver directly, use it for detailed output.
+    from live2note.models.task import CheckResult, LiveCheckStatus
+
+    check_result: CheckResult | None = None
+    try:
+        check_result = adapter.check_live(url)
+    except Exception:
+        pass
+
+    # ── Build output panel ──
+    from rich.panel import Panel
+
+    lines: list[str] = []
+    lines.append(f"[bold]Platform:[/bold] {adapter.get_platform()}")
+
+    if check_result:
+        live_status = check_result.live_status or LiveCheckStatus.UNKNOWN.value
+        lines.append(f"[bold]Status:[/bold] {live_status}")
+
+        if check_result.title:
+            lines.append(f"[bold]Title:[/bold] {check_result.title}")
+        if check_result.streamer:
+            lines.append(f"[bold]Streamer:[/bold] {check_result.streamer}")
+        if check_result.room_id:
+            lines.append(f"[bold]Room ID:[/bold] {check_result.room_id}")
+
+    if stream_url:
+        lines.append("[bold]Stream URL:[/bold] [green]resolved[/green]")
+        if show_stream_url:
+            display = safe_url_full(stream_url)
+        else:
+            display = safe_url_short(stream_url)
+        lines.append(f"  {display}")
+        if not show_stream_url:
+            lines.append("  [dim](use --show-stream-url to see the full URL)[/dim]")
+    else:
+        lines.append("[bold]Stream URL:[/bold] [yellow]not resolved[/yellow]")
+        if check_result and check_result.error:
+            lines.append(f"  [yellow]{check_result.error}[/yellow]")
+        lines.append("")
+        lines.append("[dim]Tips:[/dim]")
+        lines.append("  [dim]1. Provide --stream-url to pass a direct stream URL.[/dim]")
+        lines.append("  [dim]2. Use --platform generic with a known m3u8/flv URL.[/dim]")
+        lines.append("  [dim]3. Install streamlink: pip install streamlink[/dim]")
+        lines.append("  [dim]4. Use --debug-resolve for detailed diagnostics.[/dim]")
+
+    if debug_resolve and check_result and check_result.error:
+        lines.append(f"\n[dim]Error detail: {check_result.error}[/dim]")
+
+    rprint(Panel("\n".join(lines), title=f"live2note resolve: {adapter.get_platform()}",
+                 border_style="blue"))

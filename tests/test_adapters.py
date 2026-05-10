@@ -181,7 +181,8 @@ class TestDouyinAdapter:
         mock_ytdlp.side_effect = _YtdlpError("JS required")
         result = self.adapter.check_live("https://live.douyin.com/987654321")
         assert result.is_live is False
-        assert "generic" in result.error
+        assert result.live_status == "error"
+        assert "streamlink" in result.error or "stream-url" in result.error
 
 
 # ── Registry ────────────────────────────────────────────────

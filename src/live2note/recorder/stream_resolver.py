@@ -5,6 +5,7 @@ from __future__ import annotations
 from live2note.adapters.base import BaseAdapter
 from live2note.logger import get_logger
 from live2note.models.task import TaskState
+from live2note.utils.safe_url import safe_url
 
 log = get_logger("recorder.resolve")
 
@@ -26,14 +27,14 @@ class StreamResolver:
     ) -> str:
         # 1. User-provided override.
         if stream_url_override:
-            log.info("Using explicit stream URL: %s", stream_url_override[:80])
+            log.info("Using explicit stream URL: %s", safe_url(stream_url_override))
             return stream_url_override
 
         # 2. Already resolved during check_live.
         if state.metadata.stream_url:
             log.info(
                 "Using stream URL from metadata: %s",
-                state.metadata.stream_url[:80],
+                safe_url(state.metadata.stream_url),
             )
             return state.metadata.stream_url
 
@@ -45,5 +46,5 @@ class StreamResolver:
                 f"Could not resolve stream URL for {state.url}.\n"
                 "Try specifying --stream-url directly."
             )
-        log.info("Resolved stream URL: %s", url[:80])
+        log.info("Resolved stream URL: %s", safe_url(url))
         return url

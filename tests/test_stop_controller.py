@@ -86,9 +86,9 @@ def test_stop_ffmpeg_already_exited(mock_alive):
 
 def test_mark_stopped_sets_fields():
     state = TaskState(task_id="t", url="u")
-    state.mark_stopped(StopReason.LIVE_ENDED.value)
+    state.mark_stopped(StopReason.LIVE_ENDED_CONFIRMED.value)
     assert state.status == TaskStatus.STOPPED.value
-    assert state.stop_reason == StopReason.LIVE_ENDED.value
+    assert state.stop_reason == StopReason.LIVE_ENDED_CONFIRMED.value
     assert state.stopped_at is not None
     assert state.stop_requested is False
 

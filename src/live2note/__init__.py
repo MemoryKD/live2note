@@ -1,3 +1,3 @@
 """live2note — Live stream knowledge capture agent."""
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"

@@ -108,12 +108,14 @@ def test_build_empty_chunks():
 
 def test_build_title_from_metadata():
     note = build_final_note("t1", _sample_metadata(), [], None)
-    assert note.title == "AI 入门系列第三讲"
+    assert "AI 入门系列第三讲" in note.title
+    assert "B站" in note.title
 
 
 def test_build_title_fallback():
     note = build_final_note("t1", {"platform": "generic"}, [], None)
-    assert "t1" in note.title
+    assert "通用直播流" in note.title
+    assert "未知主播" in note.title
 
 
 def test_build_deduplication():
@@ -146,10 +148,11 @@ def test_write_markdown_contains_all_sections(tmp_path: Path):
 
     content = out.read_text(encoding="utf-8")
 
-    # All required sections.
-    assert "# AI 入门系列第三讲" in content
+    # All required sections — title now uses display_title format.
+    assert "B站直播知识笔记" in content
+    assert "AI 入门系列第三讲" in content
     assert "## 基本信息" in content
-    assert "平台：bilibili" in content
+    assert "平台：B站" in content
     assert "主播：知识分享官" in content
     assert "来源链接：https://live.bilibili.com/12345" in content
     assert "任务 ID：task_md" in content
@@ -283,7 +286,8 @@ def test_save_creates_files(tmp_path: Path, monkeypatch):
 
     # Verify MD structure.
     md = md_path.read_text(encoding="utf-8")
-    assert "# AI 入门系列第三讲" in md
+    assert "B站直播知识笔记" in md
+    assert "AI 入门系列第三讲" in md
     assert "## 基本信息" in md
     assert "## 核心观点" in md
     assert "## 检索关键词" in md

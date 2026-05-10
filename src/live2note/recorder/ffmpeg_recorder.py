@@ -2,7 +2,7 @@
 
 Records a live audio stream using sequential ffmpeg processes.
 Each segment is a standalone WAV file (16 kHz, mono, pcm_s16le).
-Supports stop flags and no-data timeout.
+Supports stop flags, no-data timeout, and auto-reconnect on ffmpeg failure.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import signal
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 from live2note.logger import get_logger
@@ -19,6 +20,9 @@ log = get_logger("recorder.ffmpeg")
 
 SegmentResult = dict[str, object]
 
+# reconnect_fn(seg_index, attempt) -> new stream URL or None to abort
+ReconnectFn = Callable[[int, int], str | None]
+
 
 class FfmpegRecorder:
     """Records a live stream into numbered WAV segments.
@@ -27,6 +31,7 @@ class FfmpegRecorder:
     - Stop flag detection (control/stop.flag)
     - ffmpeg PID tracking
     - No-data timeout
+    - Auto-reconnect on stream interruption
     """
 
     def __init__(
@@ -42,10 +47,20 @@ class FfmpegRecorder:
         self._proc: subprocess.Popen | None = None
         self._prev_handler: object = None
         self._last_ffmpeg_pid: int | None = None
+        self._last_ffmpeg_exit_code: int | None = None
+        self._last_ffmpeg_stderr: str | None = None
 
     @property
     def last_ffmpeg_pid(self) -> int | None:
         return self._last_ffmpeg_pid
+
+    @property
+    def last_ffmpeg_exit_code(self) -> int | None:
+        return self._last_ffmpeg_exit_code
+
+    @property
+    def last_ffmpeg_stderr(self) -> str | None:
+        return self._last_ffmpeg_stderr
 
     # ── public API ───────────────────────────────────────────
 
@@ -57,6 +72,9 @@ class FfmpegRecorder:
         total_seconds: int = 0,
         task_dir: Path | None = None,
         no_data_timeout: int = 0,
+        reconnect_fn: ReconnectFn | None = None,
+        max_reconnect_attempts: int = 20,
+        reconnect_delay: int = 10,
     ) -> list[SegmentResult]:
         """Record the stream until stopped or total_seconds is reached.
 
@@ -67,6 +85,9 @@ class FfmpegRecorder:
             total_seconds:   Total recording limit (0 = unlimited).
             task_dir:        Task directory (for stop flag checking).
             no_data_timeout: Stop if no new segment within this many seconds.
+            reconnect_fn:    Callable(seg_index, attempt) -> new URL or None to abort.
+            max_reconnect_attempts: Max reconnect retries per segment.
+            reconnect_delay: Seconds to wait between reconnect attempts.
         """
         output_dir.mkdir(parents=True, exist_ok=True)
         self._install_signal_handler()
@@ -109,21 +130,62 @@ class FfmpegRecorder:
 
                 log.info("Recording segment %d -> %s (%ds)", seg_index, filename, int(seg_dur))
 
-                result = self._record_one(stream_url, output_path, seg_dur)
+                current_stream_url = stream_url
+                result = self._record_one(current_stream_url, output_path, seg_dur)
 
                 if result is not None:
                     segments.append(result)
                     total_recorded += float(result["duration"])
                     last_segment_time = time.monotonic()
                     log.info("Segment %d complete: %.1fs", seg_index, result["duration"])
-                else:
-                    if self._stop_requested:
-                        log.info("Recording stopped by user.")
-                    else:
-                        log.warning("Segment %d failed — stream may have ended.", seg_index)
+                    seg_index += 1
+                    continue
+
+                # ── Segment failed — reconnect? ──────────────────────────────────
+                if self._stop_requested:
+                    log.info("Recording stopped by user.")
                     break
 
-                seg_index += 1
+                if reconnect_fn is None or max_reconnect_attempts <= 0:
+                    log.warning("Segment %d failed — stream may have ended.", seg_index)
+                    break
+
+                log.warning(
+                    "Segment %d failed — starting reconnect (max %d attempts)...",
+                    seg_index, max_reconnect_attempts,
+                )
+                reconnected = False
+                for attempt in range(1, max_reconnect_attempts + 1):
+                    if self._stop_requested:
+                        break
+                    time.sleep(reconnect_delay)
+                    new_url = reconnect_fn(seg_index, attempt)
+                    if new_url is None:
+                        log.warning("Reconnect aborted by caller (attempt %d/%d).",
+                                    attempt, max_reconnect_attempts)
+                        break
+                    log.info("Retrying segment %d with fresh URL (attempt %d/%d)",
+                             seg_index, attempt, max_reconnect_attempts)
+                    result = self._record_one(new_url, output_path, seg_dur)
+                    if result is not None:
+                        segments.append(result)
+                        total_recorded += float(result["duration"])
+                        last_segment_time = time.monotonic()
+                        log.info("Segment %d complete after reconnect: %.1fs",
+                                 seg_index, result["duration"])
+                        reconnected = True
+                        seg_index += 1
+                        break
+
+                if reconnected:
+                    continue
+
+                if self._stop_requested:
+                    log.info("Recording stopped by user during reconnect.")
+                else:
+                    log.warning("All %d reconnect attempts failed — ending recording.",
+                                max_reconnect_attempts)
+                break
         finally:
             self._restore_signal_handler()
 
@@ -168,6 +230,9 @@ class FfmpegRecorder:
             raise
         finally:
             self._proc = None
+            self._last_ffmpeg_exit_code = returncode
+            if stderr_bytes:
+                self._last_ffmpeg_stderr = stderr_bytes.decode("utf-8", errors="replace")[-300:]
 
         if self._stop_requested:
             if output_path.is_file() and output_path.stat().st_size > 0:

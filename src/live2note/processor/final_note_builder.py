@@ -11,14 +11,18 @@ from typing import Any
 @dataclass
 class FinalNote:
     title: str = ""
+    display_title: str = ""
     platform: str = ""
     streamer: str = ""
+    author: str = ""
     stream_title: str = ""
     source_url: str = ""
     started_at: str = ""
     ended_at: str = ""
     task_id: str = ""
     tags: list[str] = field(default_factory=list)
+    stop_reason: str = ""
+    duration: str = ""
 
     one_line_summary: str = ""
     key_points: list[str] = field(default_factory=list)
@@ -31,27 +35,45 @@ class FinalNote:
     speaker_info: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _platform_display_name(platform: str) -> str:
+    return {"douyin": "抖音", "bilibili": "B站", "generic": "通用直播流"}.get(
+        platform, platform
+    )
+
+
 def build_final_note(
     task_id: str,
     metadata: dict[str, Any],
     chunks: list[dict[str, Any]],
     summaries: list[dict[str, Any]] | None,
     task_dir: Path | str | None = None,
+    stop_reason: str = "",
 ) -> FinalNote:
     """Assemble a FinalNote from task data.
 
     If *summaries* is None or empty, sections that require LLM output
     will be marked as "未进行 LLM 总结".
     """
+    platform_key = metadata.get("platform", "")
+    platform_display = _platform_display_name(platform_key)
+    author_val = metadata.get("author") or metadata.get("streamer") or "未知主播"
+    stream_title = metadata.get("title") or "直播"
+    display_title = metadata.get("display_title") or (
+        f"{platform_display}直播知识笔记：{author_val} - {stream_title}"
+    )
+
     note = FinalNote(
         task_id=task_id,
-        platform=metadata.get("platform", ""),
+        platform=platform_key,
         streamer=metadata.get("streamer", ""),
-        stream_title=metadata.get("title", ""),
-        source_url=metadata.get("url", ""),
+        author=author_val,
+        stream_title=stream_title,
+        source_url=metadata.get("source_url") or metadata.get("url", ""),
         started_at=metadata.get("started_at") or "",
         ended_at=metadata.get("ended_at") or "",
-        title=metadata.get("title") or f"直播知识笔记 — {task_id}",
+        title=display_title,
+        display_title=display_title,
+        stop_reason=stop_reason,
     )
 
     # Build a lookup from chunk_id → summary.

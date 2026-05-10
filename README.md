@@ -22,6 +22,8 @@ live2note 是一个命令行工具，用于将 B站、抖音等直播平台上�
 - 支持导入 getnote，方便后续语义搜索
 - 完整的任务状态管理，支持断点续跑
 - 支持手动停止（`live2note stop`）和直播结束自动停止
+- **智能直播结束检测**：区分网络波动与真正下播，仅连续确认才停止
+- **自动重连**：ffmpeg 因 HLS 地址过期或网络中断退出后，自动重试并解析新地址
 
 ## 使用场景
 
@@ -145,6 +147,8 @@ live2note run URL [OPTIONS]
   --getnote-tag TEXT    getnote 标签（可重复）
   --no-check            跳过直播状态检测
   --no-record           跳过录制（仅创建任务）
+  --no-auto-stop        禁用自动停止（直到手动 Ctrl+C 或时长限制）
+  --max-reconnect-attempts INT  覆盖最大重连次数（-1 使用配置）
   -c, --config PATH     指定配置文件路径
 ```
 
@@ -159,9 +163,13 @@ recording:
   segment_duration: 5             # 每段音频时长（分钟）
   ffmpeg_path: "ffmpeg"           # ffmpeg 可执行文件路径
   stop_grace_seconds: 10          # 停止录制时的优雅等待时间
-  no_data_timeout_seconds: 180    # 无数据超时自动停止
+  no_data_timeout_seconds: 600    # 无数据超时自动停止（10 分钟）
   live_check_interval_seconds: 60 # 直播状态检测间隔
-  max_live_check_failures: 3      # 连续检测失败上限
+  max_live_check_failures: 5      # 连续检测失败上限（仅对 ERROR/UNKNOWN 生效）
+  live_end_confirmations: 3       # 连续 NOT_LIVE 确认次数后判定直播结束
+  reconnect_enabled: true         # 是否启用自动重连
+  reconnect_delay_seconds: 10     # 重连尝试间隔
+  max_reconnect_attempts: 20      # 最大重连尝试次数
 
 transcription:
   model_size: "large-v3"          # whisper 模型大小
@@ -179,7 +187,8 @@ llm:
 
 getnote:
   enabled: false                  # 是否默认导入 getnote
-  command: 'getnote save "{file_path}" --title "{title}"'
+  default_tags: ["live2note"]
+  timeout: 120                    # 秒
 
 output:
   base_dir: ""                    # 数据保存目录（空 = ~/.live2note/data/tasks）
@@ -323,6 +332,65 @@ live2note export-prompts <task_id>        # 导出 prompt 文件
     task.log               # 任务日志
 ```
 
+## 抖音直播录音说明
+
+抖音直播间地址通常不是最终可录制的流地址。live2note 会尝试自动解析真实直播流，使用以下多级策略：
+
+1. **`--stream-url` 手动提供**（最高优先级）
+2. **yt-dlp** 解析（通过配置启用）
+3. **streamlink** 解析（推荐，对抖音兼容性最好）
+4. **手动兜底**（如果所有自动策略失败）
+
+### 安装 streamlink（推荐）
+
+```bash
+pip install streamlink
+```
+
+### 解析命令
+
+```bash
+# 只解析直播流地址，不录制
+live2note resolve "https://live.douyin.com/xxxx" --platform douyin
+
+# 显示完整 stream URL
+live2note resolve "https://live.douyin.com/xxxx" --platform douyin --show-stream-url
+
+# 显示解析诊断信息
+live2note resolve "https://live.douyin.com/xxxx" --platform douyin --debug-resolve
+
+# 使用 cookie 文件
+live2note resolve "https://live.douyin.com/xxxx" --platform douyin --cookie-file ./cookies.txt
+```
+
+### 录制命令
+
+```bash
+# 全自动（需要 streamlink 已安装）
+live2note run "https://live.douyin.com/xxxx" --platform douyin --getnote
+
+# 禁用自动停止（推荐，避免因 check_live 失败而中断）
+live2note run "https://live.douyin.com/xxxx" --platform douyin --no-auto-stop --getnote
+
+# 手动传入 stream URL（自动解析失败时）
+live2note run "https://live.douyin.com/xxxx" --platform douyin --stream-url "https://xxx.m3u8" --getnote
+```
+
+### 录制中断与重连
+
+抖音流地址会定期过期。当 ffmpeg 因网络波动或地址过期退出时：
+- 系统自动触发重连流程（默认最多 20 次，每次间隔 10 秒）
+- 重新调用解析器获取新的流地址
+- 不会将单次中断判定为直播结束
+- 仅连续多次 NOT_LIVE 确认才停止录制
+
+### 注意事项
+
+- 自动解析可能受平台页面变化、登录状态、直播状态影响
+- 使用 `--no-auto-stop` 可以避免因检测失败导致录制中断
+- 本工具不绕过平台权限，不破解加密，不处理无权限内容
+- 日志中不会记录完整 stream URL（使用 `--show-stream-url` 可显示）
+
 ## 支持平台
 
 | 平台 | URL 格式 | 解析方式 |
@@ -333,22 +401,55 @@ live2note export-prompts <task_id>        # 导出 prompt 文件
 
 ## getnote 导入说明
 
-- 当 `--getnote` 标志或配置中 `getnote.enabled: true` 时，`final_note.md` 将被导入 getnote
-- getnote 命令模板可在配置文件中自定义
-- 如果 getnote 导入失败，不影响本地文件保存
-- 可通过 `live2note import-getnote <task_id>` 单独导入
+live2note **只导入当前任务的 `notes/final_note.md`**，不会导入以下内容：
+
+- 不会导入 transcripts（转写文件）
+- 不会导入 chunks（分块文件）
+- 不会导入 summaries（总结文件）
+- 不会导入 prompts（LLM prompt 文件）
+- 不会导入其他 task 的笔记
+- 不会导入项目文档（README、CHANGELOG 等）
+
+```bash
+# 预览即将导入的文件（不实际导入）
+live2note import-getnote <task_id> --dry-run
+
+# 导入当前任务的 final_note
+live2note import-getnote <task_id>
+```
+
+- 当 `--getnote` 标志或配置中 `getnote.enabled: true` 时，录制完成后自动导入
+- 如果 `final_note.md` 不存在或为空，会明确报错提示
+- 导入失败不影响本地文件保存，可稍后重试
+- 如果 getnote 中出现无关笔记，说明版本较旧或配置错误，需要更新
 
 ## 停止录制说明
 
-live2note 支持两种停止方式：
+live2note 支持三种停止方式：
 
-**方式一：直播结束自动停止**
+**方式一：直播结束自动检测停止**
 
-当 LiveMonitor 检测到直播结束，或连续无数据超时，会：
+系统通过 LiveMonitor 定时检查直播状态，智能检测直播结束：
+
+- **LIVE**：正常直播，重置所有计数器
+- **NOT_LIVE**：平台确认直播已结束，递增确认计数（默认连续 3 次才判定结束）
+- **ERROR/UNKNOWN**：网络波动或检测失败，递增错误计数（默认连续 5 次才停止）
+
+检测到直播结束后：
 1. 自动停止 ffmpeg 录制
 2. 保存已录制的音频片段
 3. 继续完成转写、总结、生成笔记
 4. 任务状态标记为 `COMPLETED`
+
+**自动重连**
+
+当 ffmpeg 因网络波动或 HLS 地址过期退出时，系统会自动：
+
+1. 记录 ffmpeg 退出码和错误信息
+2. 等待重连间隔（默认 10 秒）
+3. 调用 `adapter.resolve_stream_url()` 获取新的流地址
+4. 使用新地址重新启动 ffmpeg
+5. 最多重试 20 次（可配置）
 
 **方式二：手动停止**
 
@@ -357,11 +458,18 @@ live2note stop <task_id>        # 优雅停止
 live2note stop <task_id> --force # 强制停止
 ```
 
-停止后：
-1. 已录制的音频片段不会丢失
-2. 可以继续处理已录制内容
-3. 生成部分 final_note（标注为手动停止）
-4. 任务状态标记为 `COMPLETED_WITH_MANUAL_STOP`
+**方式三：--no-auto-stop 模式**
+
+对于抖音等 check_live 可能频繁失败的平台，可以使用 `--no-auto-stop`：
+
+```bash
+live2note run "https://live.douyin.com/xxxx" --no-auto-stop
+```
+
+此模式下：
+- LiveMonitor 不启动
+- 录制只会在 Ctrl+C、时长限制、或 `live2note stop` 时停止
+- 不会因 check_live 失败而自动停止
 
 ## 注意事项与合规声明
 
@@ -485,7 +593,7 @@ ruff check src/ tests/
 
 ## 版本说明
 
-当前版本：**v0.1.1**
+当前版本：**v0.1.4**
 
 这是 live2note 的第一个版本，核心能力包括：
 - 直播音频录制与分片

@@ -19,9 +19,13 @@ _DEFAULTS: dict[str, Any] = {
         "audio_channels": 1,
         "ffmpeg_path": "ffmpeg",
         "stop_grace_seconds": 10,
-        "no_data_timeout_seconds": 180,
+        "no_data_timeout_seconds": 600,
         "live_check_interval_seconds": 60,
-        "max_live_check_failures": 3,
+        "max_live_check_failures": 5,
+        "live_end_confirmations": 3,
+        "reconnect_enabled": True,
+        "reconnect_delay_seconds": 10,
+        "max_reconnect_attempts": 20,
     },
     "transcription": {
         "model_size": "large-v3",
@@ -71,9 +75,8 @@ _DEFAULTS: dict[str, Any] = {
     },
     "getnote": {
         "enabled": False,
-        "command": "getnote save",
         "default_tags": ["live2note"],
-        "timeout": 60,
+        "timeout": 120,
     },
     "output": {
         "base_dir": "",
@@ -89,7 +92,16 @@ _DEFAULTS: dict[str, Any] = {
     },
     "platforms": {
         "bilibili": {"quality": "best"},
-        "douyin": {"quality": "best"},
+        "douyin": {
+            "quality": "best",
+            "resolver": {
+                "timeout": 30,
+                "cookie_file": "",
+                "streamlink_enabled": True,
+                "yt_dlp_enabled": True,
+                "stream_url_ttl": 3600,
+            },
+        },
     },
 }
 
@@ -113,9 +125,13 @@ class RecordingConfig:
     audio_channels: int = 1
     ffmpeg_path: str = "ffmpeg"
     stop_grace_seconds: int = 10
-    no_data_timeout_seconds: int = 180
+    no_data_timeout_seconds: int = 600
     live_check_interval_seconds: int = 60
-    max_live_check_failures: int = 3
+    max_live_check_failures: int = 5
+    live_end_confirmations: int = 3
+    reconnect_enabled: bool = True
+    reconnect_delay_seconds: int = 10
+    max_reconnect_attempts: int = 20
 
 
 @dataclass(frozen=True)
@@ -166,9 +182,8 @@ class LLMConfig:
 @dataclass(frozen=True)
 class GetnoteConfig:
     enabled: bool = False
-    command: str = "getnote save"
     default_tags: tuple[str, ...] = ("live2note",)
-    timeout: int = 60
+    timeout: int = 120
 
 
 @dataclass(frozen=True)
@@ -222,9 +237,8 @@ class AppConfig:
             llm=LLMConfig(**{k: v for k, v in llm.items() if k in LLMConfig.__dataclass_fields__}),
             getnote=GetnoteConfig(
                 enabled=gn.get("enabled", False),
-                command=gn.get("command", GetnoteConfig.command),
                 default_tags=tuple(gn.get("default_tags", ["live2note"])),
-                timeout=gn.get("timeout", 60),
+                timeout=gn.get("timeout", 120),
             ),
             diarization=DiarizationConfig(**dia),
             output=OutputConfig(
