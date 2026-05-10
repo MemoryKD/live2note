@@ -13,8 +13,6 @@ import re
 import time
 from datetime import datetime, timezone
 
-import requests
-
 from live2note.logger import get_logger
 from live2note.models.resolve_result import (
     ResolveResult,
@@ -55,7 +53,7 @@ class DouyinPageResolver:
 
     def __init__(self, timeout: int = 15, playwright_enabled: bool = True) -> None:
         self._timeout = timeout
-        self._session: requests.Session | None = None
+        self._session = None  # type: ignore[assignment]
         self._playwright_enabled = playwright_enabled
 
     def resolve(self, url: str, debug: bool = False) -> ResolveResult:
@@ -103,16 +101,6 @@ class DouyinPageResolver:
                 debug_info=debug_info if debug else {},
             )
 
-        except requests.RequestException as exc:
-            log.info("Page fetch failed for %s: %s", safe_url(url), exc)
-            return ResolveResult(
-                platform="douyin",
-                source_url=url,
-                status=ResolveStatus.ERROR.value,
-                strategy=ResolveStrategy.PAGE_PUBLIC_DATA.value,
-                error_message=f"Page request failed: {exc}",
-                debug_info=debug_info if debug else {},
-            )
         except Exception as exc:
             log.info("Page resolution failed for %s: %s", safe_url(url), exc)
             return ResolveResult(
@@ -218,7 +206,9 @@ class DouyinPageResolver:
 
     # ── internal helpers ─────────────────────────────────────
 
-    def _get_session(self) -> requests.Session:
+    def _get_session(self):
+        import requests  # lazy import — not needed for Playwright-only use
+
         if self._session is None:
             self._session = requests.Session()
             self._session.headers.update({
