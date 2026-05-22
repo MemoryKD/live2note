@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from live2note.logger import get_logger
 from live2note.processor.cleaner import CleanSegment
+
+log = get_logger("processor.chunker")
 
 # Target chunk size in Chinese characters (≈ bytes / 3 for UTF-8 CJK).
 MIN_CHUNK_CHARS = 800
@@ -68,9 +71,15 @@ def chunk_segments(
             chunk_start = seg.start
 
         # If adding this segment would exceed max, flush first.
-        if buf_len + seg_len > max_chars and buf_len >= min_chars:
+        if buf_len + seg_len > max_chars and buf_len > 0:
             flush()
             chunk_start = seg.start
+
+        if seg_len > max_chars:
+            log.warning(
+                "Single segment exceeds max_chars (%d > %d), chunk may be oversized.",
+                seg_len, max_chars,
+            )
 
         buf_texts.append(seg_text)
         buf_sources.append({"start": seg.start, "end": seg.end})

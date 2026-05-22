@@ -174,17 +174,21 @@ class TaskManager:
     def _save(self, state: TaskState, t_dir: Path) -> None:
         t_dir.mkdir(parents=True, exist_ok=True)
         path = t_dir / STATE_FILE
-        path.write_text(
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(
             json.dumps(state.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        tmp.replace(path)
 
     def _save_metadata(self, state: TaskState, t_dir: Path) -> None:
         path = t_dir / METADATA_FILE
-        path.write_text(
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(
             json.dumps(state.metadata.to_dict(), indent=2, ensure_ascii=False),
             encoding="utf-8",
         )
+        tmp.replace(path)
 
     def _sorted_task_dirs(self) -> list[Path]:
         if not self._base.is_dir():

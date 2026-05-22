@@ -64,3 +64,13 @@ def get_adapter_or_raise(url: str, platform: str = "auto") -> BaseAdapter:
 def list_adapters() -> list[str]:
     """Return all registered platform names."""
     return sorted(_NAME_MAP.keys())
+
+
+def configure_adapter(platform: str, platform_config: dict) -> None:
+    """Apply platform-specific config to a registered adapter."""
+    adapter = _NAME_MAP.get(platform)
+    if adapter is None:
+        log.warning("Cannot configure unknown platform: %s", platform)
+        return
+    if hasattr(adapter, "configure"):
+        adapter.configure(platform_config)

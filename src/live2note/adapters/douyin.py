@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import re
-import subprocess
 
 from live2note.adapters.base import BaseAdapter
 from live2note.logger import get_logger
 from live2note.models.task import CheckResult, LiveCheckStatus
+from live2note.resolvers.ytdlp_resolver import YtdlpError as _YtdlpError
 
 log = get_logger("adapter.douyin")
 
@@ -35,6 +34,13 @@ class DouyinAdapter(BaseAdapter):
 
     def __init__(self) -> None:
         self._resolver: object = None  # Lazy-init DouyinResolver
+        self._resolver_config: dict | None = None
+
+    def configure(self, platform_config: dict) -> None:
+        """Apply platform-specific config (e.g. resolver settings)."""
+        self._resolver_config = platform_config.get("resolver")
+        # Reset lazy-init so next call uses new config.
+        self._resolver = None
 
     def match(self, url: str) -> bool:
         # v.douyin.com short links and webcast.amemv.com reflow pages
@@ -174,10 +180,8 @@ class DouyinAdapter(BaseAdapter):
         if self._resolver is None:
             try:
                 from live2note.resolvers import DouyinResolver
-                # Try to load per-platform config from AppConfig.
-                # Since we don't have AppConfig injected directly,
-                # default to the built-in resolver with defaults.
-                self._resolver = DouyinResolver()
+
+                self._resolver = DouyinResolver(resolver_config=self._resolver_config)
             except ImportError:
                 self._resolver = _NoopResolver()
         return self._resolver
@@ -186,44 +190,9 @@ class DouyinAdapter(BaseAdapter):
 
     @staticmethod
     def _yt_dlp_info(url: str, timeout: int = 30) -> dict:
-        cmd = [
-            "yt-dlp",
-            "--no-download",
-            "--no-warnings",
-            "-j",
-            url,
-        ]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except FileNotFoundError as err:
-            raise _YtdlpError("yt-dlp not found. Install it: pip install yt-dlp") from err
-        except subprocess.TimeoutExpired as err:
-            raise _YtdlpError(f"yt-dlp timed out after {timeout}s") from err
+        from live2note.resolvers.ytdlp_resolver import run_ytdlp
 
-        if result.returncode != 0:
-            stderr = result.stderr.strip()
-            raise _YtdlpError(stderr or f"exit code {result.returncode}")
-
-        stdout = result.stdout.strip()
-        if not stdout:
-            raise _YtdlpError("Empty output from yt-dlp")
-
-        first_line = stdout.split("\n")[0]
-        try:
-            return json.loads(first_line)
-        except json.JSONDecodeError as exc:
-            raise _YtdlpError(f"Invalid JSON from yt-dlp: {exc}") from exc
-
-
-class _YtdlpError(Exception):
-    """Raised when yt-dlp subprocess fails."""
+        return run_ytdlp(url, timeout=timeout)
 
 
 class _NoopResolver:

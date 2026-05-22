@@ -56,6 +56,12 @@ class DouyinPageResolver:
         self._session = None  # type: ignore[assignment]
         self._playwright_enabled = playwright_enabled
 
+    def close(self) -> None:
+        """Close the underlying HTTP session if created."""
+        if self._session is not None:
+            self._session.close()
+            self._session = None  # type: ignore[assignment]
+
     def resolve(self, url: str, debug: bool = False) -> ResolveResult:
         """Resolve a Douyin URL to a recordable stream URL.
 

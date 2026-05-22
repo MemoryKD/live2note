@@ -45,7 +45,6 @@ class FfmpegRecorder:
         self._channels = channels
         self._stop_requested = False
         self._proc: subprocess.Popen | None = None
-        self._prev_handler: object = None
         self._last_ffmpeg_pid: int | None = None
         self._last_ffmpeg_exit_code: int | None = None
         self._last_ffmpeg_stderr: str | None = None
@@ -90,7 +89,6 @@ class FfmpegRecorder:
             reconnect_delay: Seconds to wait between reconnect attempts.
         """
         output_dir.mkdir(parents=True, exist_ok=True)
-        self._install_signal_handler()
 
         segments: list[SegmentResult] = []
         seg_index = 1
@@ -100,94 +98,91 @@ class FfmpegRecorder:
         )
         last_segment_time = time.monotonic()
 
-        try:
-            while not self._stop_requested:
-                # Check stop flag from disk (cross-process signal).
-                if task_dir and stop_controller.is_stop_flag_present(task_dir):
-                    log.info("Stop flag detected — ending recording.")
-                    self._stop_requested = True
+        while not self._stop_requested:
+            # Check stop flag from disk (cross-process signal).
+            if task_dir and stop_controller.is_stop_flag_present(task_dir):
+                log.info("Stop flag detected — ending recording.")
+                self._stop_requested = True
+                break
+
+            # No-data timeout.
+            if no_data_timeout > 0 and seg_index > 1:
+                elapsed_since_last = time.monotonic() - last_segment_time
+                if elapsed_since_last > no_data_timeout:
+                    log.warning(
+                        "No new segment for %ds (timeout=%ds) — stopping.",
+                        int(elapsed_since_last), no_data_timeout,
+                    )
                     break
 
-                # No-data timeout.
-                if no_data_timeout > 0 and seg_index > 1:
-                    elapsed_since_last = time.monotonic() - last_segment_time
-                    if elapsed_since_last > no_data_timeout:
-                        log.warning(
-                            "No new segment for %ds (timeout=%ds) — stopping.",
-                            int(elapsed_since_last), no_data_timeout,
-                        )
-                        break
+            if max_segments > 0 and seg_index > max_segments:
+                log.info("Reached total duration limit (%ds).", total_seconds)
+                break
 
-                if max_segments > 0 and seg_index > max_segments:
-                    log.info("Reached total duration limit (%ds).", total_seconds)
+            remaining = total_seconds - total_recorded if total_seconds > 0 else 0
+            seg_dur = min(segment_seconds, remaining) if remaining > 0 else segment_seconds
+
+            filename = f"segment_{seg_index:03d}.wav"
+            output_path = output_dir / filename
+
+            log.info("Recording segment %d -> %s (%ds)", seg_index, filename, int(seg_dur))
+
+            current_stream_url = stream_url
+            result = self._record_one(current_stream_url, output_path, seg_dur)
+
+            if result is not None:
+                segments.append(result)
+                total_recorded += float(result["duration"])
+                last_segment_time = time.monotonic()
+                log.info("Segment %d complete: %.1fs", seg_index, result["duration"])
+                seg_index += 1
+                continue
+
+            # ── Segment failed — reconnect? ──────────────────────────────────
+            if self._stop_requested:
+                log.info("Recording stopped by user.")
+                break
+
+            if reconnect_fn is None or max_reconnect_attempts <= 0:
+                log.warning("Segment %d failed — stream may have ended.", seg_index)
+                break
+
+            log.warning(
+                "Segment %d failed — starting reconnect (max %d attempts)...",
+                seg_index, max_reconnect_attempts,
+            )
+            reconnected = False
+            for attempt in range(1, max_reconnect_attempts + 1):
+                if self._stop_requested:
                     break
-
-                remaining = total_seconds - total_recorded if total_seconds > 0 else 0
-                seg_dur = min(segment_seconds, remaining) if remaining > 0 else segment_seconds
-
-                filename = f"segment_{seg_index:03d}.wav"
-                output_path = output_dir / filename
-
-                log.info("Recording segment %d -> %s (%ds)", seg_index, filename, int(seg_dur))
-
-                current_stream_url = stream_url
-                result = self._record_one(current_stream_url, output_path, seg_dur)
-
+                time.sleep(reconnect_delay)
+                new_url = reconnect_fn(seg_index, attempt)
+                if new_url is None:
+                    log.warning("Reconnect aborted by caller (attempt %d/%d).",
+                                attempt, max_reconnect_attempts)
+                    break
+                log.info("Retrying segment %d with fresh URL (attempt %d/%d)",
+                         seg_index, attempt, max_reconnect_attempts)
+                result = self._record_one(new_url, output_path, seg_dur)
                 if result is not None:
                     segments.append(result)
                     total_recorded += float(result["duration"])
                     last_segment_time = time.monotonic()
-                    log.info("Segment %d complete: %.1fs", seg_index, result["duration"])
+                    log.info("Segment %d complete after reconnect: %.1fs",
+                             seg_index, result["duration"])
+                    reconnected = True
                     seg_index += 1
-                    continue
-
-                # ── Segment failed — reconnect? ──────────────────────────────────
-                if self._stop_requested:
-                    log.info("Recording stopped by user.")
                     break
 
-                if reconnect_fn is None or max_reconnect_attempts <= 0:
-                    log.warning("Segment %d failed — stream may have ended.", seg_index)
-                    break
+            if reconnected:
+                continue
 
-                log.warning(
-                    "Segment %d failed — starting reconnect (max %d attempts)...",
-                    seg_index, max_reconnect_attempts,
-                )
-                reconnected = False
-                for attempt in range(1, max_reconnect_attempts + 1):
-                    if self._stop_requested:
-                        break
-                    time.sleep(reconnect_delay)
-                    new_url = reconnect_fn(seg_index, attempt)
-                    if new_url is None:
-                        log.warning("Reconnect aborted by caller (attempt %d/%d).",
-                                    attempt, max_reconnect_attempts)
-                        break
-                    log.info("Retrying segment %d with fresh URL (attempt %d/%d)",
-                             seg_index, attempt, max_reconnect_attempts)
-                    result = self._record_one(new_url, output_path, seg_dur)
-                    if result is not None:
-                        segments.append(result)
-                        total_recorded += float(result["duration"])
-                        last_segment_time = time.monotonic()
-                        log.info("Segment %d complete after reconnect: %.1fs",
-                                 seg_index, result["duration"])
-                        reconnected = True
-                        seg_index += 1
-                        break
-
-                if reconnected:
-                    continue
-
-                if self._stop_requested:
-                    log.info("Recording stopped by user during reconnect.")
-                else:
-                    log.warning("All %d reconnect attempts failed — ending recording.",
-                                max_reconnect_attempts)
-                break
-        finally:
-            self._restore_signal_handler()
+            if self._stop_requested:
+                log.info("Recording stopped by user during reconnect.")
+            else:
+                log.warning("All %d reconnect attempts failed — ending recording.",
+                            max_reconnect_attempts)
+            break
 
         return segments
 
@@ -224,6 +219,11 @@ class FfmpegRecorder:
             log.info("ffmpeg started pid=%d", self._proc.pid)
             _, stderr_bytes = self._proc.communicate()
             returncode = self._proc.returncode
+            elapsed = time.monotonic() - t0
+        except KeyboardInterrupt:
+            log.info("Ctrl+C received — stopping recording...")
+            self._stop_requested = True
+            self._terminate_ffmpeg()
             elapsed = time.monotonic() - t0
         except FileNotFoundError:
             log.error("ffmpeg not found at '%s'. Is it installed?", self._ffmpeg)
@@ -278,20 +278,7 @@ class FfmpegRecorder:
             str(output_path),
         ]
 
-    # ── signal handling ──────────────────────────────────────
-
-    def _install_signal_handler(self) -> None:
-        self._prev_handler = signal.getsignal(signal.SIGINT)
-        signal.signal(signal.SIGINT, self._on_sigint)
-
-    def _restore_signal_handler(self) -> None:
-        if self._prev_handler is not None:
-            signal.signal(signal.SIGINT, self._prev_handler)
-            self._prev_handler = None
-
-    def _on_sigint(self, signum: int, frame: object) -> None:
-        log.info("Ctrl+C received — stopping recording...")
-        self.stop()
+    # ── process cleanup ──────────────────────────────────────
 
     def _terminate_ffmpeg(self) -> None:
         if self._proc is None or self._proc.poll() is not None:

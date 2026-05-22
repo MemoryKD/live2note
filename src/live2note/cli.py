@@ -127,29 +127,39 @@ def _print_task_info(
 # ── monitor stop callback ───────────────────────────────────
 
 
-def _handle_monitor_stop(mgr, state, task_dir, reason):
+def _handle_monitor_stop(mgr, state, task_dir, reason, lock=None):
     """Called by LiveMonitor when stream goes offline."""
+    from contextlib import nullcontext
+
     from live2note.recorder.stop_controller import write_stop_flag
 
     write_stop_flag(task_dir, reason)
-    state.request_stop(reason)
-    mgr.save(state)
+    guard = lock if lock is not None else nullcontext()
+    with guard:
+        state.request_stop(reason)
+        mgr.save(state)
 
 
-def _make_reconnect_fn(mgr, state, adapter, cfg):
+def _make_reconnect_fn(mgr, state, adapter, cfg, lock=None):
     """Create reconnect callback for FfmpegRecorder. Returns None if reconnect disabled."""
     if not cfg.recording.reconnect_enabled:
         return None
 
+    from contextlib import nullcontext
+
+    guard = lock if lock is not None else nullcontext()
+
     def reconnect(seg_index: int, attempt: int) -> str | None:
-        state.mark_reconnecting()
-        mgr.save(state)
+        with guard:
+            state.mark_reconnecting()
+            mgr.save(state)
         # Try adapter re-resolve first.
         try:
             new_url = adapter.resolve_stream_url(state.url)
             if new_url:
-                state.metadata.stream_url = new_url
-                mgr.save_metadata(state)
+                with guard:
+                    state.metadata.stream_url = new_url
+                    mgr.save_metadata(state)
                 log.info("Re-resolved stream URL: %s", safe_url(new_url))
                 return new_url
         except Exception as exc:
@@ -225,8 +235,14 @@ def run(
 ) -> None:
     """Record a live stream, transcribe, and organize knowledge."""
     from live2note.adapters import get_adapter_or_raise, list_adapters
+    from live2note.adapters.registry import configure_adapter
 
     cfg = load_config(config)
+
+    # Apply per-platform config to adapters.
+    for platform_name, platform_cfg in cfg.platforms.items():
+        configure_adapter(platform_name, platform_cfg)
+
     mgr = _get_manager(cfg)
 
     # Resolve adapter.
@@ -330,6 +346,9 @@ def run(
     mgr.save(state)
 
     # Start live monitor (background thread) — skip if --no-auto-stop.
+    import threading
+
+    state_lock = threading.Lock()
     monitor = None
     if not no_auto_stop and not no_check and resolved_platform != "generic":
         from live2note.recorder.live_monitor import LiveMonitor
@@ -338,11 +357,12 @@ def run(
             state=state,
             task_dir=task_dir,
             check_live_fn=adapter.check_live,
-            stop_fn=lambda s, td, reason: _handle_monitor_stop(mgr, s, td, reason),
+            stop_fn=lambda s, td, reason: _handle_monitor_stop(mgr, s, td, reason, lock=state_lock),
             save_fn=lambda s: mgr.save(s),
             interval_seconds=cfg.recording.live_check_interval_seconds,
             max_failures=cfg.recording.max_live_check_failures,
             live_end_confirmations=cfg.recording.live_end_confirmations,
+            lock=state_lock,
         )
         monitor.start()
     elif no_auto_stop:
@@ -350,7 +370,7 @@ def run(
 
     try:
         reconn_max = max_reconnect_attempts if max_reconnect_attempts >= 0 else cfg.recording.max_reconnect_attempts
-        reconn_fn = _make_reconnect_fn(mgr, state, adapter, cfg)
+        reconn_fn = _make_reconnect_fn(mgr, state, adapter, cfg, lock=state_lock)
         completed = recorder.record(
             stream_url=resolved_stream_url,
             output_dir=audio_dir,

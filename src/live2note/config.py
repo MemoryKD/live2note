@@ -9,7 +9,10 @@ from typing import Any
 
 import yaml
 
+from live2note.logger import get_logger
 from live2note.paths import config_search_paths, default_base_dir
+
+log = get_logger("config")
 
 _DEFAULTS: dict[str, Any] = {
     "recording": {
@@ -115,6 +118,15 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             merged[key] = value
     return merged
+
+
+def _filter_known(cls, data: dict, section: str) -> dict:
+    """Filter dict to only known dataclass fields, warning on unknown keys."""
+    known = set(cls.__dataclass_fields__)
+    unknown = [k for k in data if k not in known]
+    if unknown:
+        log.warning("Unknown keys in config [%s]: %s", section, ", ".join(unknown))
+    return {k: v for k, v in data.items() if k in known}
 
 
 @dataclass(frozen=True)
@@ -232,15 +244,17 @@ class AppConfig:
         tr_glossary = tuple(tr.get("glossary", []))
 
         return cls(
-            recording=RecordingConfig(**rec),
-            transcription=TranscriptionConfig(**{**tr, "glossary": tr_glossary}),
-            llm=LLMConfig(**{k: v for k, v in llm.items() if k in LLMConfig.__dataclass_fields__}),
+            recording=RecordingConfig(**_filter_known(RecordingConfig, rec, "recording")),
+            transcription=TranscriptionConfig(**_filter_known(
+                TranscriptionConfig, {**tr, "glossary": tr_glossary}, "transcription",
+            )),
+            llm=LLMConfig(**_filter_known(LLMConfig, llm, "llm")),
             getnote=GetnoteConfig(
                 enabled=gn.get("enabled", False),
                 default_tags=tuple(gn.get("default_tags", ["live2note"])),
                 timeout=gn.get("timeout", 120),
             ),
-            diarization=DiarizationConfig(**dia),
+            diarization=DiarizationConfig(**_filter_known(DiarizationConfig, dia, "diarization")),
             output=OutputConfig(
                 base_dir=base_dir,
                 keep_audio=out.get("keep_audio", True),

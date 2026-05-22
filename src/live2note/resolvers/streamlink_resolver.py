@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from datetime import datetime, timezone
 
 from live2note.logger import get_logger
@@ -80,7 +81,7 @@ class StreamlinkResolver:
     def _run_streamlink(self, url: str) -> str:
         """Run streamlink and return the resolved stream URL."""
         cmd = [
-            "python", "-m", "streamlink",
+            sys.executable, "-m", "streamlink",
             url,
             self._quality,
             "--stream-url",

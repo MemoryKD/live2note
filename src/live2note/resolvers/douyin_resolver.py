@@ -120,10 +120,13 @@ class DouyinResolver:
         log.info("Douyin resolve: trying page public data")
         try:
             page = DouyinPageResolver(timeout=self._timeout)
-            result = page.resolve(url, debug=debug)
-            if result.is_resolved:
-                return self._enrich(result, url, debug_entries if debug else {})
-            debug_entries.append({"strategy": "page_public_data", "status": result.status, "error": result.error_message})
+            try:
+                result = page.resolve(url, debug=debug)
+                if result.is_resolved:
+                    return self._enrich(result, url, debug_entries if debug else {})
+                debug_entries.append({"strategy": "page_public_data", "status": result.status, "error": result.error_message})
+            finally:
+                page.close()
         except Exception:
             debug_entries.append({"strategy": "page_public_data", "status": "error", "error": "exception"})
 
@@ -195,15 +198,18 @@ class DouyinResolver:
         # Try page public data as a last check.
         try:
             page = DouyinPageResolver(timeout=self._timeout)
-            resolve_result = page.resolve(url)
-            if resolve_result.is_resolved:
-                stream_url = stream_url or resolve_result.stream_url
-                room_id = room_id or resolve_result.room_id
-                return self._make_check_result(
-                    url=url, is_live=True, live_status=LiveCheckStatus.LIVE.value,
-                    stream_url=stream_url, title=title, author=author,
-                    room_id=room_id,
-                )
+            try:
+                resolve_result = page.resolve(url)
+                if resolve_result.is_resolved:
+                    stream_url = stream_url or resolve_result.stream_url
+                    room_id = room_id or resolve_result.room_id
+                    return self._make_check_result(
+                        url=url, is_live=True, live_status=LiveCheckStatus.LIVE.value,
+                        stream_url=stream_url, title=title, author=author,
+                        room_id=room_id,
+                    )
+            finally:
+                page.close()
         except Exception:
             pass
 

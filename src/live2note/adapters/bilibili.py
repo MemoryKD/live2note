@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import re
-import subprocess
 
 from live2note.adapters.base import BaseAdapter
 from live2note.logger import get_logger
 from live2note.models.task import CheckResult, LiveCheckStatus
+from live2note.resolvers.ytdlp_resolver import YtdlpError as _YtdlpError
 
 log = get_logger("adapter.bilibili")
 
@@ -96,44 +95,6 @@ class BilibiliAdapter(BaseAdapter):
     @staticmethod
     def _yt_dlp_info(url: str, timeout: int = 30) -> dict:
         """Run yt-dlp -j and return parsed JSON. Raises _YtdlpError on failure."""
-        cmd = [
-            "yt-dlp",
-            "--no-download",
-            "--no-warnings",
-            "-j",
-            url,
-        ]
-        try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                encoding="utf-8",
-                errors="replace",
-            )
-        except FileNotFoundError as err:
-            raise _YtdlpError(
-                "yt-dlp not found. Install it: pip install yt-dlp"
-            ) from err
-        except subprocess.TimeoutExpired as err:
-            raise _YtdlpError(f"yt-dlp timed out after {timeout}s") from err
+        from live2note.resolvers.ytdlp_resolver import run_ytdlp
 
-        if result.returncode != 0:
-            stderr = result.stderr.strip()
-            raise _YtdlpError(stderr or f"exit code {result.returncode}")
-
-        stdout = result.stdout.strip()
-        if not stdout:
-            raise _YtdlpError("Empty output from yt-dlp")
-
-        # yt-dlp may emit multiple JSON objects (one per line) — take the first.
-        first_line = stdout.split("\n")[0]
-        try:
-            return json.loads(first_line)
-        except json.JSONDecodeError as exc:
-            raise _YtdlpError(f"Invalid JSON from yt-dlp: {exc}") from exc
-
-
-class _YtdlpError(Exception):
-    """Raised when yt-dlp subprocess fails."""
+        return run_ytdlp(url, timeout=timeout)

@@ -61,8 +61,11 @@ class AnthropicProvider(BaseLLMProvider):
 
         try:
             with httpx.Client(timeout=self._timeout) as client:
-                resp = client.post(url, json=payload, headers=headers)
-                resp.raise_for_status()
+                from live2note.llm.utils import call_with_retry
+
+                resp = call_with_retry(
+                    lambda: client.post(url, json=payload, headers=headers),
+                )
         except httpx.HTTPError as exc:
             log.error("Anthropic API request failed: %s", exc)
             return LLMResult(text="", error=str(exc))
