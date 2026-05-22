@@ -1,5 +1,28 @@
 # 更新日志
 
+## v0.1.5 — 并发安全与可靠性改进 (2026-05-22)
+
+### 修复
+
+- **LiveMonitor 线程竞态**：增加 `threading.Lock` 保护 LiveMonitor 与主线程并发写 TaskState
+- **SIGINT 死锁风险**：移除自定义 SIGINT 信号处理器，改用 `KeyboardInterrupt` 捕获避免 ffmpeg `communicate()` 死锁
+- **StreamlinkResolver 硬编码 python**：使用 `sys.executable` 替代硬编码 `"python"`，修复仅有 `python3` 的系统
+- **task_state.json 原子写入**：使用 `.tmp + rename` 模式防止崩溃时文件损坏
+- **配置未知键静默忽略**：统一使用 `_filter_known()` 对未知配置键产生 warning
+- **DouyinPageResolver session 泄漏**：增加 `close()` 方法并在 `DouyinResolver` 中使用 try/finally 确保关闭
+- **Douyin resolver 配置未注入**：`platforms.douyin.resolver` 配置现在正确传入 `DouyinResolver`
+- **Chunker 超大 segment**：修正 flush 条件，对超过 `max_chars` 的 segment 产生警告
+- **yt-dlp 代码重复**：提取共享 `run_ytdlp()` 函数和 `YtdlpError`，适配器委托调用
+
+### 新增
+
+- **LLM 调用重试**：OpenAI/Anthropic provider 增加指数退避重试（429/500/502/503）
+- **hatch 动态版本**：`pyproject.toml` 使用 `__init__.py` 作为唯一版本来源
+
+### 变更
+
+- 版本号统一为 v0.1.5，修复 `pyproject.toml` 与 `__init__.py` 不一致问题
+
 ## v0.1.4 — 抖音工作流、直播误判修复、getnote 安全加固 (2026-05-10)
 
 ### 修复
